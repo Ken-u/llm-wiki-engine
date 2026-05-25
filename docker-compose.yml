@@ -1,0 +1,14 @@
+services:
+  llm-wiki-engine:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./projects:/data/projects
+      - ./config.yaml:/app/config.yaml:ro
+    environment:
+      - LLM_API_KEY=${LLM_API_KEY:-}
+      - EMBEDDING_API_KEY=${EMBEDDING_API_KEY:-}
+      - JWT_SECRET=${JWT_SECRET:-change-me-in-production}
+      - PROJECTS_DIR=/data/projects
+    restart: unless-stopped

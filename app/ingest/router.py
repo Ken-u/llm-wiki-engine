@@ -1,0 +1,104 @@
+"""Ingest trigger / status / history endpoints."""
+
+from __future__ import annotations
+
+from datetime import datetime
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.auth.deps import get_current_user
+from app.auth.models import User
+from app.database import get_db
+from app.ingest.models import IngestJob
+from app.ingest.queue import ingest_queue
+from app.projects.service import check_membership, get_project_or_404
+
+router = APIRouter(prefix="/api/projects/{project_id}/ingest", tags=["ingest"])
+
+
+class IngestRequest(BaseModel):
+    source_file: str | None = None  # specific file in raw/sources/; None = all
+
+
+class IngestJobResponse(BaseModel):
+    id: str
+    source_path: str
+    status: str
+    progress: str
+    files_written: list[str] | None = None
+    error: str | None = None
+    retry_count: int
+    created_at: datetime
+    completed_at: datetime | None = None
+
+    class Config:
+        from_attributes = True
+
+
+@router.post("", status_code=status.HTTP_202_ACCEPTED)
+async def trigger_ingest(
+    project_id: str,
+    body: IngestRequest = IngestRequest(),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await check_membership(db, project_id, user)
+    project = await get_project_or_404(db, project_id)
+
+    source_dir = Path(project.disk_path) / "raw" / "sources"
+    if body.source_file:
+        src = source_dir / body.source_file
+        if not src.exists():
+            raise HTTPException(status.HTTP_404_NOT_FOUND, f"Source file not found: {body.source_file}")
+        sources = [src]
+    else:
+        if not source_dir.exists():
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "No sources directory")
+        sources = [f for f in source_dir.iterdir() if f.is_file() and not f.name.startswith(".")]
+
+    if not sources:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No source files found")
+
+    job_ids = []
+    for src in sources:
+        jid = await ingest_queue.enqueue(project_id, project.disk_path, str(src), user.id)
+        job_ids.append(jid)
+
+    return {"jobs": job_ids, "count": len(job_ids)}
+
+
+@router.get("/status", response_model=list[IngestJobResponse])
+async def ingest_status(
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await check_membership(db, project_id, user)
+    stmt = (
+        select(IngestJob)
+        .where(IngestJob.project_id == project_id)
+        .where(IngestJob.status.in_(["pending", "processing"]))
+        .order_by(IngestJob.created_at.desc())
+    )
+    return list((await db.execute(stmt)).scalars().all())
+
+
+@router.get("/history", response_model=list[IngestJobResponse])
+async def ingest_history(
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    limit: int = 50,
+):
+    await check_membership(db, project_id, user)
+    stmt = (
+        select(IngestJob)
+        .where(IngestJob.project_id == project_id)
+        .order_by(IngestJob.created_at.desc())
+        .limit(limit)
+    )
+    return list((await db.execute(stmt)).scalars().all())

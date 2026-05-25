@@ -1,0 +1,166 @@
+"""Chat API with SSE streaming + conversation persistence."""
+
+from __future__ import annotations
+
+import json
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+
+import aiofiles
+from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.responses import StreamingResponse
+
+from app.auth.deps import get_current_user
+from app.auth.models import User
+from app.chat.rag import chat_rag
+from app.database import get_db
+from app.projects.service import check_membership, get_project_or_404
+
+router = APIRouter(prefix="/api/projects/{project_id}", tags=["chat"])
+
+
+class ChatRequest(BaseModel):
+    message: str = Field(min_length=1)
+    conversation_id: str | None = None
+
+
+class ConversationResponse(BaseModel):
+    id: str
+    title: str
+    created_at: str
+    message_count: int
+
+
+def _conv_dir(project_dir: str) -> Path:
+    p = Path(project_dir) / ".llm-wiki" / "chats"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def _conv_list_path(project_dir: str) -> Path:
+    return Path(project_dir) / ".llm-wiki" / "conversations.json"
+
+
+async def _load_conversations(project_dir: str) -> list[dict]:
+    p = _conv_list_path(project_dir)
+    if not p.exists():
+        return []
+    async with aiofiles.open(p, "r", encoding="utf-8") as f:
+        return json.loads(await f.read())
+
+
+async def _save_conversations(project_dir: str, convs: list[dict]) -> None:
+    p = _conv_list_path(project_dir)
+    async with aiofiles.open(p, "w", encoding="utf-8") as f:
+        await f.write(json.dumps(convs, ensure_ascii=False, indent=2))
+
+
+async def _load_messages(project_dir: str, conv_id: str) -> list[dict]:
+    p = _conv_dir(project_dir) / f"{conv_id}.json"
+    if not p.exists():
+        return []
+    async with aiofiles.open(p, "r", encoding="utf-8") as f:
+        return json.loads(await f.read())
+
+
+async def _save_messages(project_dir: str, conv_id: str, messages: list[dict]) -> None:
+    p = _conv_dir(project_dir) / f"{conv_id}.json"
+    async with aiofiles.open(p, "w", encoding="utf-8") as f:
+        await f.write(json.dumps(messages, ensure_ascii=False, indent=2))
+
+
+@router.post("/chat")
+async def chat(
+    project_id: str,
+    body: ChatRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await check_membership(db, project_id, user)
+    project = await get_project_or_404(db, project_id)
+
+    conv_id = body.conversation_id or str(uuid.uuid4())
+    history = await _load_messages(project.disk_path, conv_id)
+
+    # Convert to LLM format
+    llm_history = [
+        {"role": m["role"], "content": m["content"]}
+        for m in history
+        if m["role"] in ("user", "assistant")
+    ]
+
+    collected_tokens: list[str] = []
+
+    async def sse_stream():
+        async for token in chat_rag(
+            project.disk_path,
+            body.message,
+            llm_history,
+            conversation_id=conv_id,
+        ):
+            collected_tokens.append(token)
+            yield f"data: {json.dumps({'token': token})}\n\n"
+
+        assistant_response = "".join(collected_tokens)
+
+        # Persist messages
+        history.append({"role": "user", "content": body.message, "timestamp": datetime.now(timezone.utc).isoformat()})
+        history.append({"role": "assistant", "content": assistant_response, "timestamp": datetime.now(timezone.utc).isoformat()})
+        await _save_messages(project.disk_path, conv_id, history)
+
+        # Update conversation list
+        convs = await _load_conversations(project.disk_path)
+        existing = next((c for c in convs if c["id"] == conv_id), None)
+        if existing:
+            existing["message_count"] = len(history)
+        else:
+            convs.append({
+                "id": conv_id,
+                "title": body.message[:80],
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "message_count": len(history),
+                "user_id": user.id,
+            })
+        await _save_conversations(project.disk_path, convs)
+
+        yield f"data: {json.dumps({'done': True, 'conversation_id': conv_id})}\n\n"
+
+    return StreamingResponse(sse_stream(), media_type="text/event-stream")
+
+
+@router.get("/conversations", response_model=list[ConversationResponse])
+async def list_conversations(
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await check_membership(db, project_id, user)
+    project = await get_project_or_404(db, project_id)
+    convs = await _load_conversations(project.disk_path)
+    return [
+        ConversationResponse(
+            id=c["id"],
+            title=c.get("title", ""),
+            created_at=c.get("created_at", ""),
+            message_count=c.get("message_count", 0),
+        )
+        for c in convs
+    ]
+
+
+@router.get("/conversations/{conversation_id}")
+async def get_conversation(
+    project_id: str,
+    conversation_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await check_membership(db, project_id, user)
+    project = await get_project_or_404(db, project_id)
+    messages = await _load_messages(project.disk_path, conversation_id)
+    if not messages:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Conversation not found")
+    return {"id": conversation_id, "messages": messages}

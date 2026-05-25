@@ -1,0 +1,85 @@
+"""Search API endpoint."""
+
+from __future__ import annotations
+
+from fastapi import APIRouter, Depends
+from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.auth.deps import get_current_user
+from app.auth.models import User
+from app.database import get_db
+from app.projects.service import check_membership, get_project_or_404
+from app.search.bm25 import search_bm25
+from app.search.fusion import FusedResult, rrf_fusion
+from app.search.vector import search_vector
+
+router = APIRouter(prefix="/api/projects/{project_id}/search", tags=["search"])
+
+
+class SearchRequest(BaseModel):
+    query: str = Field(min_length=1)
+    top_k: int = Field(default=10, ge=1, le=50)
+    mode: str = Field(default="hybrid", pattern=r"^(hybrid|keyword|vector)$")
+
+
+class SearchResultItem(BaseModel):
+    path: str
+    page_id: str
+    title: str
+    score: float
+    snippet: str
+    sources: list[str]
+
+
+class SearchResponse(BaseModel):
+    results: list[SearchResultItem]
+    mode: str
+    keyword_hits: int
+    vector_hits: int
+
+
+@router.post("", response_model=SearchResponse)
+async def search(
+    project_id: str,
+    body: SearchRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await check_membership(db, project_id, user)
+    project = await get_project_or_404(db, project_id)
+
+    kw_results = []
+    vec_results = []
+
+    if body.mode in ("hybrid", "keyword"):
+        kw_results = search_bm25(project.disk_path, body.query, top_k=body.top_k * 2)
+
+    if body.mode in ("hybrid", "vector"):
+        vec_results = await search_vector(project.disk_path, body.query, top_k=body.top_k * 2)
+
+    if body.mode == "keyword":
+        fused = [
+            FusedResult(
+                path=r.path, page_id=r.page_id, title=r.title,
+                score=r.score, snippet=r.snippet, sources=["keyword"],
+            )
+            for r in kw_results[:body.top_k]
+        ]
+    elif body.mode == "vector":
+        fused = [
+            FusedResult(
+                path=r.path, page_id=r.page_id, title=r.page_id,
+                score=r.score, snippet=r.chunk_text[:200], sources=["vector"],
+            )
+            for r in vec_results[:body.top_k]
+        ]
+    else:
+        fused = rrf_fusion(kw_results, vec_results, body.query)[:body.top_k]
+
+    return SearchResponse(
+        results=[SearchResultItem(**f.__dict__) for f in fused],
+        mode=body.mode,
+        keyword_hits=len(kw_results),
+        vector_hits=len(vec_results),
+    )
