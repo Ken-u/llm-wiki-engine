@@ -193,10 +193,9 @@ async def agent_chat(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Agent has no projects")
 
     async def sse_stream():
-        async for token in service.cross_project_rag(
-            projects, body.message, [], agent.system_prompt,
+        async for event in service.agent_toolcall_chat(
+            db, projects, body.message, [], agent.system_prompt,
         ):
-            yield f"data: {json.dumps({'token': token})}\n\n"
-        yield f"data: {json.dumps({'done': True})}\n\n"
+            yield f"data: {event}\n\n"
 
     return StreamingResponse(sse_stream(), media_type="text/event-stream")

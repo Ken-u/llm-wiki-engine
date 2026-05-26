@@ -13,6 +13,8 @@ from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.models import Agent, AgentProject
+from app.agents.orchestrator import run_agent_turn
+from app.agents.tools import ToolContext
 from app.chat.context import compute_context_budget, truncate_to_budget
 from app.config import get_config
 from app.llm import client as llm_client
@@ -217,3 +219,35 @@ async def cross_project_rag(
         max_tokens=4096,
     ):
         yield token
+
+
+async def get_ticket_project(db, projects: list[Project]) -> Project | None:
+    """If any main project has a ticket binding, load the ticket project."""
+    from sqlalchemy import select as sa_select
+    for proj in projects:
+        if proj.ticket_project_id:
+            ticket = (await db.execute(
+                sa_select(Project).where(Project.id == proj.ticket_project_id)
+            )).scalar_one_or_none()
+            if ticket:
+                return ticket
+    return None
+
+
+async def agent_toolcall_chat(
+    db,
+    projects: list[Project],
+    message: str,
+    history: list[dict],
+    system_prompt: str,
+):
+    """Agent chat via tool-calling orchestrator. Returns an async generator of SSE events."""
+    ticket_project = await get_ticket_project(db, projects)
+
+    ctx = ToolContext(
+        main_projects=projects,
+        ticket_project=ticket_project,
+    )
+
+    async for event in run_agent_turn(message, history, system_prompt, ctx):
+        yield event
