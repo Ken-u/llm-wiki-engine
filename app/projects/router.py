@@ -13,7 +13,7 @@ from app.auth.deps import get_current_user
 from app.auth.models import User
 from app.database import get_db
 from app.projects import service
-from app.projects.models import ProjectMember
+from app.projects.models import Project, ProjectMember
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 
@@ -31,9 +31,17 @@ class ProjectResponse(BaseModel):
     description: str
     created_by: int
     created_at: datetime
+    ticket_project_id: str | None = None
+    ticket_project_name: str | None = None
 
     class Config:
         from_attributes = True
+
+
+class UpdateProjectRequest(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    ticket_project_id: str | None = None
 
 
 class AddMemberRequest(BaseModel):
@@ -49,6 +57,26 @@ class MemberResponse(BaseModel):
         from_attributes = True
 
 
+async def _build_project_response(db: AsyncSession, proj: Project) -> ProjectResponse:
+    """Build ProjectResponse with optional ticket project name."""
+    ticket_name = None
+    if proj.ticket_project_id:
+        ticket = (await db.execute(
+            select(Project.name).where(Project.id == proj.ticket_project_id)
+        )).scalar_one_or_none()
+        ticket_name = ticket
+    return ProjectResponse(
+        id=proj.id,
+        name=proj.name,
+        slug=proj.slug,
+        description=proj.description,
+        created_by=proj.created_by,
+        created_at=proj.created_at,
+        ticket_project_id=proj.ticket_project_id,
+        ticket_project_name=ticket_name,
+    )
+
+
 @router.post("", response_model=ProjectResponse, status_code=status.HTTP_201_CREATED)
 async def create_project(
     body: CreateProjectRequest,
@@ -56,7 +84,7 @@ async def create_project(
     db: AsyncSession = Depends(get_db),
 ):
     proj = await service.create_project(db, name=body.name, slug=body.slug, description=body.description, user=user)
-    return proj
+    return await _build_project_response(db, proj)
 
 
 @router.get("", response_model=list[ProjectResponse])
@@ -64,7 +92,8 @@ async def list_projects(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    return await service.list_user_projects(db, user)
+    projects = await service.list_user_projects(db, user)
+    return [await _build_project_response(db, p) for p in projects]
 
 
 @router.get("/{project_id}", response_model=ProjectResponse)
@@ -74,7 +103,32 @@ async def get_project(
     db: AsyncSession = Depends(get_db),
 ):
     await service.check_membership(db, project_id, user)
-    return await service.get_project_or_404(db, project_id)
+    proj = await service.get_project_or_404(db, project_id)
+    return await _build_project_response(db, proj)
+
+
+@router.patch("/{project_id}", response_model=ProjectResponse)
+async def update_project(
+    project_id: str,
+    body: UpdateProjectRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await service.check_membership(db, project_id, user, require="owner")
+    proj = await service.get_project_or_404(db, project_id)
+
+    kwargs = {}
+    if "name" in body.model_fields_set:
+        kwargs["name"] = body.name
+    if "description" in body.model_fields_set:
+        kwargs["description"] = body.description
+    if "ticket_project_id" in body.model_fields_set:
+        if body.ticket_project_id is not None:
+            await service.check_membership(db, body.ticket_project_id, user)
+        kwargs["ticket_project_id"] = body.ticket_project_id
+
+    proj = await service.update_project(db, proj, **kwargs)
+    return await _build_project_response(db, proj)
 
 
 @router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)

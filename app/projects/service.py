@@ -120,6 +120,36 @@ async def add_member(db: AsyncSession, project_id: str, user_id: int, role: str 
     return member
 
 
+async def update_project(
+    db: AsyncSession,
+    project: Project,
+    *,
+    name: str | None = None,
+    description: str | None = None,
+    ticket_project_id: str | None = ...,
+) -> Project:
+    """Update project fields. Pass ticket_project_id=None to clear binding."""
+    if name is not None:
+        project.name = name
+    if description is not None:
+        project.description = description
+
+    if ticket_project_id is not ...:
+        if ticket_project_id is not None:
+            if ticket_project_id == project.id:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, "Cannot bind project to itself as ticket project")
+            target = (await db.execute(select(Project).where(Project.id == ticket_project_id))).scalar_one_or_none()
+            if target is None:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, "Ticket project not found")
+            if target.ticket_project_id is not None:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, "Ticket project cannot itself have a ticket binding (no recursive chains)")
+        project.ticket_project_id = ticket_project_id
+
+    await db.commit()
+    await db.refresh(project)
+    return project
+
+
 async def delete_project(db: AsyncSession, project: Project) -> None:
     import shutil
 
