@@ -20,6 +20,9 @@ class Project(Base):
     disk_path: Mapped[str] = mapped_column(String(512), nullable=False)
     created_by: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    ticket_project_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("projects.id", ondelete="SET NULL"), nullable=True, default=None
+    )
 
 
 class ProjectMember(Base):

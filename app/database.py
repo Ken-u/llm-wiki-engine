@@ -93,6 +93,7 @@ async def _auto_migrate(conn) -> None:
 
     migrations = [
         ("ingest_jobs", "step", "INTEGER DEFAULT 0"),
+        ("projects", "ticket_project_id", "TEXT DEFAULT NULL REFERENCES projects(id) ON DELETE SET NULL"),
     ]
 
     for table, column, col_type in migrations:
