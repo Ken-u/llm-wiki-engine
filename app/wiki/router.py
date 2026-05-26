@@ -36,10 +36,18 @@ def _build_file_tree(wiki_dir: Path, base: Path) -> list[dict]:
                 "children": _build_file_tree(entry, base),
             })
         elif entry.suffix == ".md":
+            title = ""
+            try:
+                content = entry.read_text(encoding="utf-8", errors="replace")
+                meta, _ = parse_frontmatter(content)
+                title = meta.title
+            except Exception:
+                title = ""
             items.append({
                 "name": entry.name,
                 "path": rel,
                 "type": "file",
+                "title": title,
             })
     return items
 

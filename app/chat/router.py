@@ -107,8 +107,17 @@ async def chat(
         assistant_response = "".join(collected_tokens)
 
         # Persist messages
-        history.append({"role": "user", "content": body.message, "timestamp": datetime.now(timezone.utc).isoformat()})
-        history.append({"role": "assistant", "content": assistant_response, "timestamp": datetime.now(timezone.utc).isoformat()})
+        history.append({
+            "role": "user",
+            "content": body.message,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
+        history.append({
+            "role": "assistant",
+            "content": assistant_response,
+            "rawContent": assistant_response,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
         await _save_messages(project.disk_path, conv_id, history)
 
         # Update conversation list
