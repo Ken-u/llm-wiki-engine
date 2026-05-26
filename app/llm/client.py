@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import AsyncGenerator
 
 import litellm
@@ -99,3 +100,54 @@ async def stream_collect(
     ):
         parts.append(token)
     return "".join(parts)
+
+
+@dataclass
+class ToolCallRequest:
+    """A single tool call parsed from the LLM response."""
+    id: str
+    name: str
+    arguments: str
+
+
+@dataclass
+class LLMResponse:
+    """Structured LLM response that may contain text, tool calls, or both."""
+    content: str | None
+    tool_calls: list[ToolCallRequest]
+    finish_reason: str | None
+
+
+async def complete_with_tools(
+    messages: list[dict],
+    tools: list[dict],
+    *,
+    temperature: float | None = None,
+    max_tokens: int = 4096,
+) -> LLMResponse:
+    """Single LLM call with tool definitions. Returns structured response."""
+    cfg = get_config().llm
+    kwargs = _common_kwargs(
+        temperature if temperature is not None else cfg.chat_temperature,
+        max_tokens,
+    )
+    kwargs["tools"] = tools
+
+    resp = await litellm.acompletion(messages=messages, **kwargs)
+    choice = resp.choices[0]
+    msg = choice.message
+
+    tool_calls = []
+    if msg.tool_calls:
+        for tc in msg.tool_calls:
+            tool_calls.append(ToolCallRequest(
+                id=tc.id,
+                name=tc.function.name,
+                arguments=tc.function.arguments,
+            ))
+
+    return LLMResponse(
+        content=msg.content,
+        tool_calls=tool_calls,
+        finish_reason=choice.finish_reason,
+    )
