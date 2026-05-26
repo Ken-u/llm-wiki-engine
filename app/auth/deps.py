@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import bcrypt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
-from passlib.context import CryptContext
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,18 +15,17 @@ from app.auth.models import User
 from app.config import get_config
 from app.database import get_db
 
-_pwd = CryptContext(schemes=["bcrypt"], deprecated="auto")
 _bearer = HTTPBearer()
 
 ALGORITHM = "HS256"
 
 
 def hash_password(raw: str) -> str:
-    return _pwd.hash(raw)
+    return bcrypt.hashpw(raw.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
 
 def verify_password(raw: str, hashed: str) -> bool:
-    return _pwd.verify(raw, hashed)
+    return bcrypt.checkpw(raw.encode("utf-8"), hashed.encode("utf-8"))
 
 
 def create_access_token(user_id: int) -> str:
@@ -56,4 +55,10 @@ async def get_current_user(
     user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
     if user is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "User not found")
+    return user
+
+
+async def require_admin(user: User = Depends(get_current_user)) -> User:
+    if user.role != "admin":
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Admin only")
     return user

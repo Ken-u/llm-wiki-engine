@@ -15,7 +15,11 @@ def _model_name() -> str:
     cfg = get_config().llm
     provider = cfg.provider
     model = cfg.model
-    if provider == "openai" or "/" in model:
+    if "/" in model:
+        return model
+    if cfg.api_base:
+        return f"openai/{model}"
+    if provider == "openai":
         return model
     return f"{provider}/{model}"
 
@@ -76,7 +80,14 @@ async def stream_collect(
     temperature: float | None = None,
     max_tokens: int = 4096,
 ) -> str:
-    """Stream an LLM call but collect and return the full text."""
+    """Call LLM and return the full text.
+
+    Uses streaming or non-streaming mode based on config.llm.ingest_stream.
+    """
+    cfg = get_config().llm
+    if not cfg.stream:
+        return await complete(system, user, temperature=temperature, max_tokens=max_tokens)
+
     parts: list[str] = []
     async for token in stream(
         [

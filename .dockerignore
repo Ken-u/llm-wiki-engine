@@ -1,0 +1,7 @@
+__pycache__
+*.pyc
+.venv
+projects
+.git
+*.md
+.env

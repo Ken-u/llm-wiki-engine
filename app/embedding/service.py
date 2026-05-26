@@ -49,12 +49,23 @@ async def _get_embeddings(texts: list[str]) -> list[list[float]]:
     if not cfg.enabled or not texts:
         return []
 
+    # LiteLLM needs provider prefix for non-standard model names
+    if "/" in cfg.model:
+        model_name = cfg.model
+    elif cfg.api_base:
+        model_name = f"openai/{cfg.model}"
+    elif cfg.provider == "openai":
+        model_name = cfg.model
+    else:
+        model_name = f"{cfg.provider}/{cfg.model}"
+
     kwargs = {
-        "model": cfg.model if cfg.provider == "openai" or "/" in cfg.model else f"{cfg.provider}/{cfg.model}",
+        "model": model_name,
         "input": texts,
         "api_key": cfg.api_key or None,
-        "dimensions": cfg.dimensions,
     }
+    if cfg.dimensions:
+        kwargs["dimensions"] = cfg.dimensions
     if cfg.api_base:
         kwargs["api_base"] = cfg.api_base
 

@@ -17,6 +17,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await init_db()
     from app.ingest.queue import ingest_queue
     ingest_queue.start()
+    recovered = await ingest_queue.recover_interrupted_jobs()
+    if recovered:
+        import logging
+        logging.getLogger(__name__).info("Recovered %d interrupted ingest jobs", recovered)
     yield
     ingest_queue.stop()
 
@@ -43,6 +47,9 @@ from app.ingest.router import router as ingest_router  # noqa: E402
 from app.wiki.router import router as wiki_router  # noqa: E402
 from app.search.router import router as search_router  # noqa: E402
 from app.chat.router import router as chat_router  # noqa: E402
+from app.agents.router import router as agents_router  # noqa: E402
+from app.agents.public_router import router as public_agents_router  # noqa: E402
+from app.admin.router import router as admin_router  # noqa: E402
 
 app.include_router(auth_router)
 app.include_router(projects_router)
@@ -51,6 +58,9 @@ app.include_router(ingest_router)
 app.include_router(wiki_router)
 app.include_router(search_router)
 app.include_router(chat_router)
+app.include_router(agents_router)
+app.include_router(public_agents_router)
+app.include_router(admin_router)
 
 
 @app.get("/health")

@@ -6,7 +6,7 @@
 
 ## 核心能力
 
-- **两步 CoT Ingest** — Analysis → Generation → FILE 块解析 → LLM 辅助页面合并 → SHA256 增量缓存
+- **两步 CoT Ingest** — Analysis → Generation → FILE 块解析 → LLM 辅助页面合并 → SHA256 增量缓存 → 步骤级 checkpoint 断点恢复
 - **混合搜索** — BM25 关键词 + LanceDB 向量 + RRF 融合（含文件名 / 标题加分）
 - **RAG Chat (SSE)** — 4 阶段检索管线：混合搜索 → 知识图谱 1-hop 扩展 → 上下文预算分配 → 流式响应
 - **多项目隔离** — 每项目独立文件系统 + LanceDB 向量库，per-project asyncio.Lock 串行保护 ingest
@@ -89,6 +89,7 @@ docker compose logs -f
 | `LLM_API_KEY` | LLM 服务 API Key | （空） |
 | `EMBEDDING_API_KEY` | Embedding 服务 API Key | （空） |
 | `JWT_SECRET` | JWT 签名密钥 | `change-me-in-production` |
+| `ADMIN_PASSWORD` | 管理员 admin 账户密码 | `admin` |
 | `PROJECTS_DIR` | 项目数据存储目录 | `./projects` |
 
 `config.yaml` 支持更细粒度的配置：
@@ -99,6 +100,7 @@ llm:
   model: "gpt-4o-mini"     # 模型名称
   api_base: null            # 自定义端点（Ollama: http://localhost:11434）
   max_context_size: 128000
+  stream: false              # LLM 编译请求是否使用流式传输（默认 false，Chat 始终流式）
 
 embedding:
   enabled: true

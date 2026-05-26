@@ -18,6 +18,7 @@ class IngestJob(Base):
     source_path: Mapped[str] = mapped_column(String(512), nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
     progress: Mapped[str] = mapped_column(String(256), default="")
+    step: Mapped[int] = mapped_column(Integer, default=0)  # 0=queued 1=analysis_done 2=generation_done 3=written
     files_written: Mapped[list | None] = mapped_column(JSON, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     retry_count: Mapped[int] = mapped_column(Integer, default=0)

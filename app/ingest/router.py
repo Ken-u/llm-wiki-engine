@@ -71,6 +71,31 @@ async def trigger_ingest(
     return {"jobs": job_ids, "count": len(job_ids)}
 
 
+@router.post("/{job_id}/retry", status_code=status.HTTP_202_ACCEPTED)
+async def retry_ingest(
+    project_id: str,
+    job_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Retry a failed ingest job, then hide the old failure."""
+    await check_membership(db, project_id, user)
+    project = await get_project_or_404(db, project_id)
+
+    job = (await db.execute(select(IngestJob).where(IngestJob.id == job_id))).scalar_one_or_none()
+    if not job or job.project_id != project_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Job not found")
+    if job.status != "failed":
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Only failed jobs can be retried")
+
+    # Mark old job as superseded so it won't show in history
+    job.status = "superseded"
+    await db.commit()
+
+    new_jid = await ingest_queue.enqueue(project_id, project.disk_path, job.source_path, user.id)
+    return {"job_id": new_jid}
+
+
 @router.get("/status", response_model=list[IngestJobResponse])
 async def ingest_status(
     project_id: str,
@@ -98,6 +123,7 @@ async def ingest_history(
     stmt = (
         select(IngestJob)
         .where(IngestJob.project_id == project_id)
+        .where(IngestJob.status != "superseded")
         .order_by(IngestJob.created_at.desc())
         .limit(limit)
     )

@@ -1,7 +1,15 @@
-"""Application configuration loaded from YAML and environment."""
+"""Application configuration loaded from YAML, env vars, and database.
+
+Load priority (later wins):
+  1. config.yaml (base defaults)
+  2. Environment variables (deployment overrides)
+  3. Database system_settings table (admin UI changes, highest priority)
+"""
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 from pathlib import Path
 from typing import Any
@@ -9,6 +17,8 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
+
+logger = logging.getLogger(__name__)
 
 
 class ServerConfig(BaseModel):
@@ -31,6 +41,7 @@ class LLMConfig(BaseModel):
     max_context_size: int = 128000
     ingest_temperature: float = 0.1
     chat_temperature: float = 0.7
+    stream: bool = False
 
 
 class EmbeddingConfig(BaseModel):
@@ -39,7 +50,7 @@ class EmbeddingConfig(BaseModel):
     model: str = "text-embedding-3-small"
     api_key: str = ""
     api_base: str | None = None
-    dimensions: int = 1536
+    dimensions: int | None = None
 
 
 class SearchConfig(BaseModel):
@@ -77,7 +88,8 @@ def _expand_env(value: Any) -> Any:
     return value
 
 
-def load_config(path: str | None = None) -> AppConfig:
+def _load_yaml(path: str | None = None) -> dict[str, Any]:
+    """Load config.yaml + env var overrides (layers 1+2)."""
     cfg_path = Path(path or os.environ.get("CONFIG_PATH", "config.yaml"))
     data: dict[str, Any] = {}
     if cfg_path.exists():
@@ -86,6 +98,7 @@ def load_config(path: str | None = None) -> AppConfig:
 
     data = _expand_env(data)
 
+    # Env vars override yaml
     if os.environ.get("LLM_API_KEY"):
         data.setdefault("llm", {})["api_key"] = os.environ["LLM_API_KEY"]
     if os.environ.get("EMBEDDING_API_KEY"):
@@ -95,8 +108,15 @@ def load_config(path: str | None = None) -> AppConfig:
     if os.environ.get("PROJECTS_DIR"):
         data.setdefault("server", {})["projects_dir"] = os.environ["PROJECTS_DIR"]
 
+    return data
+
+
+def load_config(path: str | None = None) -> AppConfig:
+    data = _load_yaml(path)
     return AppConfig.model_validate(data)
 
+
+# ── Singleton ──
 
 _settings = Settings()
 _config: AppConfig | None = None
@@ -111,3 +131,95 @@ def get_config() -> AppConfig:
     if _config is None:
         _config = load_config(_settings.config_path)
     return _config
+
+
+def _reload_config() -> AppConfig:
+    """Force reload from yaml+env, then overlay DB settings."""
+    global _config
+    _config = load_config(_settings.config_path)
+    return _config
+
+
+# ── DB-backed settings (layer 3) ──
+
+def _db_url_sync() -> str:
+    """Convert async sqlite URL to sync for simple reads."""
+    return _settings.database_url.replace("sqlite+aiosqlite", "sqlite")
+
+
+def load_db_overrides() -> None:
+    """Read system_settings from DB and overlay onto in-memory config.
+
+    Called once at startup after init_db, and after each admin save.
+    Uses a synchronous connection since it only runs at known safe points.
+    """
+    import sqlalchemy
+    global _config
+
+    cfg = get_config()
+    sync_url = _db_url_sync()
+
+    try:
+        engine = sqlalchemy.create_engine(sync_url)
+        with engine.connect() as conn:
+            # Check table exists
+            inspector = sqlalchemy.inspect(engine)
+            if "system_settings" not in inspector.get_table_names():
+                engine.dispose()
+                return
+
+            rows = conn.execute(sqlalchemy.text(
+                "SELECT section, data FROM system_settings"
+            )).fetchall()
+        engine.dispose()
+    except Exception:
+        logger.debug("system_settings table not available yet, skipping DB overrides")
+        return
+
+    for section, data_json in rows:
+        try:
+            values = json.loads(data_json)
+        except (json.JSONDecodeError, TypeError):
+            continue
+
+        sub = getattr(cfg, section, None)
+        if sub is None:
+            continue
+        for k, v in values.items():
+            if hasattr(sub, k) and v is not None:
+                setattr(sub, k, v)
+
+    logger.info("Loaded admin settings from DB for sections: %s", [r[0] for r in rows])
+
+
+async def save_db_settings(section: str, values: dict[str, Any]) -> None:
+    """Persist admin settings to the system_settings table, then refresh in-memory config."""
+    global _config
+    from app.database import async_session
+
+    async with async_session() as db:
+        from sqlalchemy import text
+
+        existing = (await db.execute(
+            text("SELECT data FROM system_settings WHERE section = :s"),
+            {"s": section},
+        )).scalar_one_or_none()
+
+        if existing:
+            current = json.loads(existing)
+            current.update(values)
+            await db.execute(
+                text("UPDATE system_settings SET data = :d WHERE section = :s"),
+                {"d": json.dumps(current, ensure_ascii=False), "s": section},
+            )
+        else:
+            await db.execute(
+                text("INSERT INTO system_settings (section, data) VALUES (:s, :d)"),
+                {"s": section, "d": json.dumps(values, ensure_ascii=False)},
+            )
+
+        await db.commit()
+
+    # Refresh: reload yaml+env base, then overlay all DB settings
+    _reload_config()
+    load_db_overrides()
