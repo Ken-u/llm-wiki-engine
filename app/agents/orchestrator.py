@@ -21,7 +21,7 @@ from app.llm.client import complete_with_tools, LLMResponse, stream as llm_strea
 
 logger = logging.getLogger(__name__)
 
-MAX_TOOL_CALLS = 8
+DEFAULT_MAX_TOOL_CALLS = 8
 
 
 @dataclass
@@ -66,6 +66,8 @@ async def run_agent_turn(
     history: list[dict],
     system_prompt: str,
     ctx: ToolContext,
+    *,
+    max_tool_calls: int = DEFAULT_MAX_TOOL_CALLS,
 ) -> AsyncGenerator[str, None]:
     """Run one agent turn: tool-calling loop then stream final answer.
 
@@ -82,7 +84,7 @@ async def run_agent_turn(
     traces: list[ToolTrace] = []
     used_ticket = False
 
-    for _turn_idx in range(MAX_TOOL_CALLS):
+    for _turn_idx in range(max_tool_calls):
         resp: LLMResponse = await complete_with_tools(
             messages, tool_defs, max_tokens=4096,
         )

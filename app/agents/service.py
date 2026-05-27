@@ -49,6 +49,7 @@ async def create_agent(
     project_ids: list[str],
     is_public: bool,
     require_api_key: bool,
+    max_tool_calls: int = 8,
     user_id: int,
 ) -> tuple[Agent, str | None]:
     """Create an agent. Returns (agent, raw_api_key_or_None)."""
@@ -66,6 +67,7 @@ async def create_agent(
         system_prompt=system_prompt,
         is_public=is_public,
         require_api_key=require_api_key,
+        max_tool_calls=max_tool_calls,
         api_key_hash=key_hash,
         created_by=user_id,
     )
@@ -89,6 +91,7 @@ async def update_agent(
     project_ids: list[str] | None = None,
     is_public: bool | None = None,
     require_api_key: bool | None = None,
+    max_tool_calls: int | None = None,
 ) -> Agent:
     if name is not None:
         agent.name = name
@@ -100,6 +103,8 @@ async def update_agent(
         agent.is_public = is_public
     if require_api_key is not None:
         agent.require_api_key = require_api_key
+    if max_tool_calls is not None:
+        agent.max_tool_calls = max_tool_calls
 
     if project_ids is not None:
         await db.execute(delete(AgentProject).where(AgentProject.agent_id == agent.id))
@@ -240,6 +245,7 @@ async def agent_toolcall_chat(
     message: str,
     history: list[dict],
     system_prompt: str,
+    max_tool_calls: int = 8,
 ):
     """Agent chat via tool-calling orchestrator. Returns an async generator of SSE events."""
     ticket_project = await get_ticket_project(db, projects)
@@ -249,5 +255,5 @@ async def agent_toolcall_chat(
         ticket_project=ticket_project,
     )
 
-    async for event in run_agent_turn(message, history, system_prompt, ctx):
+    async for event in run_agent_turn(message, history, system_prompt, ctx, max_tool_calls=max_tool_calls):
         yield event

@@ -121,6 +121,7 @@ async def public_agent_chat(
     async def sse_stream():
         async for event in service.agent_toolcall_chat(
             db, projects, body.message, [], agent.system_prompt,
+            max_tool_calls=agent.max_tool_calls,
         ):
             yield f"data: {event}\n\n"
 
