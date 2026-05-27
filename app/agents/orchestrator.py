@@ -4,7 +4,7 @@ Handles:
 1. System prompt construction with tool use policy
 2. Registering tool schemas with LLM
 3. Executing tool calls and feeding results back
-4. Limiting max tool calls per turn
+4. Per-call budget tracking — rejects excess calls via tool result
 5. Streaming final text response via SSE events
 """
 
@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import AsyncGenerator
 
 from app.agents.tools import ToolContext, execute_tool, get_tool_definitions
@@ -21,7 +21,9 @@ from app.llm.client import complete_with_tools, LLMResponse, stream as llm_strea
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MAX_TOOL_CALLS = 8
+DEFAULT_MAX_TOOL_CALLS = 20
+
+REJECT_MSG = "已达到最大工具调用次数，请立即根据目前已获取的数据输出结果。"
 
 
 @dataclass
@@ -47,9 +49,9 @@ def _build_system_prompt(custom_prompt: str, has_ticket: bool) -> str:
         "你是一个知识问答助手。你可以使用工具来检索知识库和案例库。",
         "",
         "工具使用策略：",
-        "- 优先使用 get_project_purpose 了解知识库范围，然后用 get_wiki_index 了解目录结构。",
-        "- 使用 search_wiki 搜索与问题相关的知识页面。",
+        "- 优先使用 search_wiki 搜索与问题相关的知识页面。",
         "- 搜索结果中的 snippet 不足以支撑结论时，使用 read_wiki_page 读取页面全文。",
+        "- 索引搜索不到时，可使用 grep_raw 直接在原文件中搜索关键词。",
         "- 不要猜测答案，始终基于工具返回的知识库内容回答。",
         f"{ticket_policy}",
         "- 引用信息时使用 [[page-name]] 格式。",
@@ -59,6 +61,13 @@ def _build_system_prompt(custom_prompt: str, has_ticket: bool) -> str:
     if custom_prompt:
         return f"{custom_prompt}\n\n{policy}"
     return policy
+
+
+def _done_event(traces: list[ToolTrace]) -> str:
+    return json.dumps({
+        "done": True,
+        "tool_traces": [{"name": t.name, "arguments": t.arguments} for t in traces],
+    })
 
 
 async def run_agent_turn(
@@ -71,8 +80,10 @@ async def run_agent_turn(
 ) -> AsyncGenerator[str, None]:
     """Run one agent turn: tool-calling loop then stream final answer.
 
-    Yields SSE-compatible JSON strings: {"token": "..."} and {"done": true}.
-    Also yields {"tool_call": {...}} events for UI transparency.
+    Yields SSE-compatible JSON strings:
+      {"token": "..."}          — streamed text chunk
+      {"tool_call": {...}}      — tool call event (may include "rejected": true)
+      {"done": true, ...}       — completion marker
     """
     full_system = _build_system_prompt(system_prompt, ctx.ticket_project is not None)
     tool_defs = get_tool_definitions(ctx)
@@ -83,8 +94,10 @@ async def run_agent_turn(
 
     traces: list[ToolTrace] = []
     used_ticket = False
+    tool_call_count = 0
 
-    for _turn_idx in range(max_tool_calls):
+    # Upper bound on LLM rounds: max_tool_calls + 2 to allow rejection + final text
+    for _round in range(max_tool_calls + 2):
         resp: LLMResponse = await complete_with_tools(
             messages, tool_defs, max_tokens=4096,
         )
@@ -93,11 +106,12 @@ async def run_agent_turn(
             if resp.content:
                 resp_content = resp.content
                 if used_ticket and "参考了案例库" not in resp.content:
-                    resp_content = resp.content + "\n\n> 以上结论参考了案例库。"
+                    resp_content += "\n\n> 以上结论参考了案例库。"
                 yield json.dumps({"token": resp_content})
-            yield json.dumps({"done": True, "tool_traces": [{"name": t.name, "arguments": t.arguments} for t in traces]})
+            yield _done_event(traces)
             return
 
+        # Build assistant message
         assistant_msg: dict = {"role": "assistant", "content": resp.content, "tool_calls": []}
         for tc in resp.tool_calls:
             assistant_msg["tool_calls"].append({
@@ -113,34 +127,37 @@ async def run_agent_turn(
             except json.JSONDecodeError:
                 args = {}
 
-            yield json.dumps({"tool_call": {"name": tc.name, "arguments": args}})
+            if tool_call_count >= max_tool_calls:
+                yield json.dumps({"tool_call": {"name": tc.name, "arguments": args, "rejected": True}})
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": REJECT_MSG,
+                })
+                traces.append(ToolTrace(name=tc.name, arguments=args, result={"rejected": True}))
+            else:
+                yield json.dumps({"tool_call": {"name": tc.name, "arguments": args}})
+                result = await execute_tool(tc.name, args, ctx)
+                traces.append(ToolTrace(name=tc.name, arguments=args, result=result))
 
-            result = await execute_tool(tc.name, args, ctx)
-            traces.append(ToolTrace(name=tc.name, arguments=args, result=result))
+                if tc.name in ("search_ticket_cases", "read_ticket_page"):
+                    if "error" not in result:
+                        used_ticket = True
 
-            if tc.name in ("search_ticket_cases", "read_ticket_page"):
-                if "error" not in result:
-                    used_ticket = True
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": json.dumps(result, ensure_ascii=False),
+                })
+                tool_call_count += 1
 
-            messages.append({
-                "role": "tool",
-                "tool_call_id": tc.id,
-                "content": json.dumps(result, ensure_ascii=False),
-            })
-
-    # Exhausted tool call budget — do a final generation without tools
-    final_messages = messages.copy()
-    final_messages.append({
-        "role": "system",
-        "content": "你已使用完所有工具调用次数。请基于已获取的信息给出最终回答。",
-    })
-
+    # Exhausted all rounds — hard fallback, stream without tools
     cfg = get_config()
     async for token in llm_stream(
-        final_messages,
+        messages,
         temperature=cfg.llm.chat_temperature,
         max_tokens=4096,
     ):
         yield json.dumps({"token": token})
 
-    yield json.dumps({"done": True, "tool_traces": [{"name": t.name, "arguments": t.arguments} for t in traces]})
+    yield _done_event(traces)

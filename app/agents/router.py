@@ -27,7 +27,7 @@ class CreateAgentRequest(BaseModel):
     project_ids: list[str] = []
     is_public: bool = False
     require_api_key: bool = True
-    max_tool_calls: int = Field(default=8, ge=1, le=50)
+    max_tool_calls: int = Field(default=20, ge=1, le=200)
 
 
 class UpdateAgentRequest(BaseModel):
@@ -37,7 +37,7 @@ class UpdateAgentRequest(BaseModel):
     project_ids: list[str] | None = None
     is_public: bool | None = None
     require_api_key: bool | None = None
-    max_tool_calls: int | None = Field(default=None, ge=1, le=50)
+    max_tool_calls: int | None = Field(default=None, ge=1, le=200)
 
 
 class AgentResponse(BaseModel):

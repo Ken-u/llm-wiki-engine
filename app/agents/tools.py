@@ -1,5 +1,4 @@
-"""Agent tool implementations: search_wiki, read_wiki_page, search_ticket_cases,
-read_ticket_page, get_wiki_index, get_project_purpose.
+"""Agent tool implementations.
 
 Each tool function takes validated arguments and returns a dict suitable for
 JSON serialization back to the LLM as a tool result.
@@ -8,6 +7,7 @@ JSON serialization back to the LLM as a tool result.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -22,6 +22,8 @@ from app.search.vector import search_vector
 logger = logging.getLogger(__name__)
 
 MAX_PAGE_CHARS = 12000
+MAX_RAW_READ_CHARS = 8000
+MAX_GREP_MATCHES = 20
 
 
 @dataclass
@@ -82,6 +84,37 @@ def get_tool_definitions(ctx: ToolContext) -> list[dict]:
                 "parameters": {
                     "type": "object",
                     "properties": {},
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "read_raw",
+                "description": "直接读取知识库中指定文件的原始内容（带偏移和长度限制）。当索引搜索不到时，可用此工具查看原始文件。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "文件路径，如 wiki/concepts/gms.md"},
+                        "offset": {"type": "integer", "description": "起始字符偏移量", "default": 0},
+                        "limit": {"type": "integer", "description": "最大读取字符数（上限 8000）", "default": 4000},
+                    },
+                    "required": ["path"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "grep_raw",
+                "description": "在知识库原始文件中搜索包含指定关键词的行。当索引搜索找不到结果时，可用此工具直接全文搜索。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "pattern": {"type": "string", "description": "搜索关键词或正则表达式"},
+                        "glob": {"type": "string", "description": "文件匹配模式，如 *.md 或 wiki/**/*.md", "default": "**/*.md"},
+                    },
+                    "required": ["pattern"],
                 },
             },
         },
@@ -185,6 +218,79 @@ async def _do_read(project: Project, page_path: str, source_type: str) -> dict:
     }
 
 
+async def _do_read_raw(ctx: ToolContext, arguments: dict) -> dict:
+    """Read raw file content with offset/limit from any main project."""
+    file_path = arguments.get("path", "")
+    offset = max(0, arguments.get("offset", 0))
+    limit = min(arguments.get("limit", 4000), MAX_RAW_READ_CHARS)
+
+    if ".." in file_path or file_path.startswith("/"):
+        return {"error": "Invalid path"}
+
+    for proj in ctx.main_projects:
+        full = Path(proj.disk_path) / file_path
+        if full.exists() and full.is_file():
+            content = await _read_file(full)
+            total_len = len(content)
+            chunk = content[offset : offset + limit]
+            return {
+                "path": file_path,
+                "offset": offset,
+                "length": len(chunk),
+                "total_length": total_len,
+                "has_more": (offset + limit) < total_len,
+                "content": chunk,
+            }
+
+    return {"error": f"File not found: {file_path}"}
+
+
+async def _do_grep_raw(ctx: ToolContext, arguments: dict) -> dict:
+    """Grep through raw files in main projects for a pattern."""
+    pattern_str = arguments.get("pattern", "")
+    glob_pattern = arguments.get("glob", "**/*.md")
+
+    if not pattern_str:
+        return {"error": "Empty pattern"}
+
+    try:
+        regex = re.compile(pattern_str, re.IGNORECASE)
+    except re.error:
+        regex = re.compile(re.escape(pattern_str), re.IGNORECASE)
+
+    matches: list[dict] = []
+
+    for proj in ctx.main_projects:
+        base = Path(proj.disk_path)
+        for file_path in sorted(base.glob(glob_pattern)):
+            if not file_path.is_file() or file_path.name.startswith("."):
+                continue
+            try:
+                text = file_path.read_text(encoding="utf-8", errors="replace")
+            except Exception:
+                continue
+            for line_no, line in enumerate(text.split("\n"), 1):
+                if regex.search(line):
+                    rel = str(file_path.relative_to(base))
+                    matches.append({
+                        "file": rel,
+                        "line": line_no,
+                        "text": line.strip()[:200],
+                    })
+                    if len(matches) >= MAX_GREP_MATCHES:
+                        return {
+                            "pattern": pattern_str,
+                            "matches": matches,
+                            "truncated": True,
+                        }
+
+    return {
+        "pattern": pattern_str,
+        "matches": matches,
+        "truncated": False,
+    }
+
+
 async def execute_tool(name: str, arguments: dict, ctx: ToolContext) -> dict:
     """Execute a named tool with parsed arguments. Returns JSON-serializable result."""
     if name == "search_wiki":
@@ -233,5 +339,11 @@ async def execute_tool(name: str, arguments: dict, ctx: ToolContext) -> dict:
             return {"error": "Ticket wiki not configured for this project."}
         page_path = arguments.get("path", "")
         return await _do_read(ctx.ticket_project, page_path, "ticket")
+
+    if name == "read_raw":
+        return await _do_read_raw(ctx, arguments)
+
+    if name == "grep_raw":
+        return await _do_grep_raw(ctx, arguments)
 
     return {"error": f"Unknown tool: {name}"}

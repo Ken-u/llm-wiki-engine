@@ -49,7 +49,7 @@ async def create_agent(
     project_ids: list[str],
     is_public: bool,
     require_api_key: bool,
-    max_tool_calls: int = 8,
+    max_tool_calls: int = 20,
     user_id: int,
 ) -> tuple[Agent, str | None]:
     """Create an agent. Returns (agent, raw_api_key_or_None)."""
@@ -245,7 +245,7 @@ async def agent_toolcall_chat(
     message: str,
     history: list[dict],
     system_prompt: str,
-    max_tool_calls: int = 8,
+    max_tool_calls: int = 20,
 ):
     """Agent chat via tool-calling orchestrator. Returns an async generator of SSE events."""
     ticket_project = await get_ticket_project(db, projects)

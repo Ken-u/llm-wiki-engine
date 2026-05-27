@@ -20,7 +20,7 @@ class Agent(Base):
     is_public: Mapped[bool] = mapped_column(Boolean, default=False)
     require_api_key: Mapped[bool] = mapped_column(Boolean, default=True)
     api_key_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    max_tool_calls: Mapped[int] = mapped_column(Integer, default=8)
+    max_tool_calls: Mapped[int] = mapped_column(Integer, default=20)
     created_by: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
