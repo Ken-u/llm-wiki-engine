@@ -29,6 +29,7 @@ class PublicAgentInfo(BaseModel):
     name: str
     description: str
     require_api_key: bool
+    tool_labels: dict[str, str] = {}
 
 
 class PublicAuthRequest(BaseModel):
@@ -47,11 +48,16 @@ async def get_public_agent_info(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Agent not found")
     if not agent.is_public:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Agent is not public")
+    try:
+        labels = json.loads(agent.tool_labels or "{}")
+    except (json.JSONDecodeError, TypeError):
+        labels = {}
     return PublicAgentInfo(
         id=agent.id,
         name=agent.name,
         description=agent.description,
         require_api_key=agent.require_api_key,
+        tool_labels=labels,
     )
 
 

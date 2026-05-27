@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import secrets
 import uuid
@@ -51,6 +52,7 @@ async def create_agent(
     require_api_key: bool,
     max_tool_calls: int = 20,
     debug_result_limit: int = 2000,
+    tool_labels: dict[str, str] | None = None,
     user_id: int,
 ) -> tuple[Agent, str | None]:
     """Create an agent. Returns (agent, raw_api_key_or_None)."""
@@ -70,6 +72,7 @@ async def create_agent(
         require_api_key=require_api_key,
         max_tool_calls=max_tool_calls,
         debug_result_limit=debug_result_limit,
+        tool_labels=json.dumps(tool_labels or {}, ensure_ascii=False),
         api_key_hash=key_hash,
         created_by=user_id,
     )
@@ -95,6 +98,7 @@ async def update_agent(
     require_api_key: bool | None = None,
     max_tool_calls: int | None = None,
     debug_result_limit: int | None = None,
+    tool_labels: dict[str, str] | None = None,
 ) -> Agent:
     if name is not None:
         agent.name = name
@@ -110,6 +114,8 @@ async def update_agent(
         agent.max_tool_calls = max_tool_calls
     if debug_result_limit is not None:
         agent.debug_result_limit = debug_result_limit
+    if tool_labels is not None:
+        agent.tool_labels = json.dumps(tool_labels, ensure_ascii=False)
 
     if project_ids is not None:
         await db.execute(delete(AgentProject).where(AgentProject.agent_id == agent.id))

@@ -22,6 +22,7 @@ class Agent(Base):
     api_key_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
     max_tool_calls: Mapped[int] = mapped_column(Integer, default=20)
     debug_result_limit: Mapped[int] = mapped_column(Integer, default=2000)
+    tool_labels: Mapped[str] = mapped_column(Text, default="{}")
     created_by: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 

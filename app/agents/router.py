@@ -29,6 +29,7 @@ class CreateAgentRequest(BaseModel):
     require_api_key: bool = True
     max_tool_calls: int = Field(default=20, ge=1, le=200)
     debug_result_limit: int = Field(default=2000, ge=500, le=50000)
+    tool_labels: dict[str, str] = Field(default_factory=dict)
 
 
 class UpdateAgentRequest(BaseModel):
@@ -40,6 +41,7 @@ class UpdateAgentRequest(BaseModel):
     require_api_key: bool | None = None
     max_tool_calls: int | None = Field(default=None, ge=1, le=200)
     debug_result_limit: int | None = Field(default=None, ge=500, le=50000)
+    tool_labels: dict[str, str] | None = None
 
 
 class AgentResponse(BaseModel):
@@ -51,6 +53,7 @@ class AgentResponse(BaseModel):
     require_api_key: bool
     max_tool_calls: int
     debug_result_limit: int
+    tool_labels: dict[str, str]
     project_ids: list[str]
     created_by: int
     created_at: datetime
@@ -76,6 +79,13 @@ async def _get_agent_or_404(db: AsyncSession, agent_id: str, user: User) -> Agen
     if agent.created_by != user.id:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Not the agent owner")
     return agent
+
+
+def _parse_tool_labels(agent: Agent) -> dict[str, str]:
+    try:
+        return json.loads(agent.tool_labels or "{}")
+    except (json.JSONDecodeError, TypeError):
+        return {}
 
 
 async def _agent_project_ids(db: AsyncSession, agent_id: str) -> list[str]:
@@ -107,7 +117,7 @@ async def create_agent(
             id=agent.id, name=agent.name, description=agent.description,
             system_prompt=agent.system_prompt, is_public=agent.is_public,
             require_api_key=agent.require_api_key, max_tool_calls=agent.max_tool_calls,
-            debug_result_limit=agent.debug_result_limit,
+            debug_result_limit=agent.debug_result_limit, tool_labels=_parse_tool_labels(agent),
             project_ids=pids, created_by=agent.created_by, created_at=agent.created_at,
         ),
         api_key=raw_key,
@@ -128,7 +138,7 @@ async def list_agents(
             id=a.id, name=a.name, description=a.description,
             system_prompt=a.system_prompt, is_public=a.is_public,
             require_api_key=a.require_api_key, max_tool_calls=a.max_tool_calls,
-            debug_result_limit=a.debug_result_limit,
+            debug_result_limit=a.debug_result_limit, tool_labels=_parse_tool_labels(a),
             project_ids=pids, created_by=a.created_by, created_at=a.created_at,
         ))
     return result
@@ -146,7 +156,7 @@ async def get_agent(
         id=agent.id, name=agent.name, description=agent.description,
         system_prompt=agent.system_prompt, is_public=agent.is_public,
         require_api_key=agent.require_api_key, max_tool_calls=agent.max_tool_calls,
-        debug_result_limit=agent.debug_result_limit,
+        debug_result_limit=agent.debug_result_limit, tool_labels=_parse_tool_labels(agent),
         project_ids=pids, created_by=agent.created_by, created_at=agent.created_at,
     )
 
@@ -165,7 +175,7 @@ async def update_agent(
         id=agent.id, name=agent.name, description=agent.description,
         system_prompt=agent.system_prompt, is_public=agent.is_public,
         require_api_key=agent.require_api_key, max_tool_calls=agent.max_tool_calls,
-        debug_result_limit=agent.debug_result_limit,
+        debug_result_limit=agent.debug_result_limit, tool_labels=_parse_tool_labels(agent),
         project_ids=pids, created_by=agent.created_by, created_at=agent.created_at,
     )
 
