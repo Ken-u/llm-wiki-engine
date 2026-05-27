@@ -122,6 +122,7 @@ async def public_agent_chat(
         async for event in service.agent_toolcall_chat(
             db, projects, body.message, [], agent.system_prompt,
             max_tool_calls=agent.max_tool_calls,
+            debug_result_limit=agent.debug_result_limit,
         ):
             yield f"data: {event}\n\n"
 

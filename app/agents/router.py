@@ -28,6 +28,7 @@ class CreateAgentRequest(BaseModel):
     is_public: bool = False
     require_api_key: bool = True
     max_tool_calls: int = Field(default=20, ge=1, le=200)
+    debug_result_limit: int = Field(default=2000, ge=500, le=50000)
 
 
 class UpdateAgentRequest(BaseModel):
@@ -38,6 +39,7 @@ class UpdateAgentRequest(BaseModel):
     is_public: bool | None = None
     require_api_key: bool | None = None
     max_tool_calls: int | None = Field(default=None, ge=1, le=200)
+    debug_result_limit: int | None = Field(default=None, ge=500, le=50000)
 
 
 class AgentResponse(BaseModel):
@@ -48,6 +50,7 @@ class AgentResponse(BaseModel):
     is_public: bool
     require_api_key: bool
     max_tool_calls: int
+    debug_result_limit: int
     project_ids: list[str]
     created_by: int
     created_at: datetime
@@ -95,6 +98,7 @@ async def create_agent(
         is_public=body.is_public,
         require_api_key=body.require_api_key,
         max_tool_calls=body.max_tool_calls,
+        debug_result_limit=body.debug_result_limit,
         user_id=user.id,
     )
     pids = await _agent_project_ids(db, agent.id)
@@ -103,6 +107,7 @@ async def create_agent(
             id=agent.id, name=agent.name, description=agent.description,
             system_prompt=agent.system_prompt, is_public=agent.is_public,
             require_api_key=agent.require_api_key, max_tool_calls=agent.max_tool_calls,
+            debug_result_limit=agent.debug_result_limit,
             project_ids=pids, created_by=agent.created_by, created_at=agent.created_at,
         ),
         api_key=raw_key,
@@ -123,6 +128,7 @@ async def list_agents(
             id=a.id, name=a.name, description=a.description,
             system_prompt=a.system_prompt, is_public=a.is_public,
             require_api_key=a.require_api_key, max_tool_calls=a.max_tool_calls,
+            debug_result_limit=a.debug_result_limit,
             project_ids=pids, created_by=a.created_by, created_at=a.created_at,
         ))
     return result
@@ -140,6 +146,7 @@ async def get_agent(
         id=agent.id, name=agent.name, description=agent.description,
         system_prompt=agent.system_prompt, is_public=agent.is_public,
         require_api_key=agent.require_api_key, max_tool_calls=agent.max_tool_calls,
+        debug_result_limit=agent.debug_result_limit,
         project_ids=pids, created_by=agent.created_by, created_at=agent.created_at,
     )
 
@@ -158,6 +165,7 @@ async def update_agent(
         id=agent.id, name=agent.name, description=agent.description,
         system_prompt=agent.system_prompt, is_public=agent.is_public,
         require_api_key=agent.require_api_key, max_tool_calls=agent.max_tool_calls,
+        debug_result_limit=agent.debug_result_limit,
         project_ids=pids, created_by=agent.created_by, created_at=agent.created_at,
     )
 
@@ -200,6 +208,7 @@ async def agent_chat(
         async for event in service.agent_toolcall_chat(
             db, projects, body.message, [], agent.system_prompt,
             max_tool_calls=agent.max_tool_calls,
+            debug_result_limit=agent.debug_result_limit,
         ):
             yield f"data: {event}\n\n"
 

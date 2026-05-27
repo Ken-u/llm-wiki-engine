@@ -22,8 +22,9 @@ from app.search.vector import search_vector
 logger = logging.getLogger(__name__)
 
 MAX_PAGE_CHARS = 12000
-MAX_RAW_READ_CHARS = 8000
+MAX_RAW_READ_LINES = 200
 MAX_GREP_MATCHES = 20
+RAW_SUBDIR = "raw/sources"
 
 
 @dataclass
@@ -91,13 +92,13 @@ def get_tool_definitions(ctx: ToolContext) -> list[dict]:
             "type": "function",
             "function": {
                 "name": "read_raw",
-                "description": "直接读取知识库中指定文件的原始内容（带偏移和长度限制）。当索引搜索不到时，可用此工具查看原始文件。",
+                "description": "按行读取项目原始源文件内容（raw/sources 目录下）。路径相对于 raw/sources，如 Android_GMS_Developer_Guide_CN.md。可配合 grep_raw 返回的行号定位读取。",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "path": {"type": "string", "description": "文件路径，如 wiki/concepts/gms.md"},
-                        "offset": {"type": "integer", "description": "起始字符偏移量", "default": 0},
-                        "limit": {"type": "integer", "description": "最大读取字符数（上限 8000）", "default": 4000},
+                        "path": {"type": "string", "description": "文件路径，相对于 raw/sources，如 Android_GMS_Developer_Guide_CN.md"},
+                        "start_line": {"type": "integer", "description": "起始行号（1-based）", "default": 1},
+                        "line_count": {"type": "integer", "description": "读取行数（上限 200）", "default": 100},
                     },
                     "required": ["path"],
                 },
@@ -107,12 +108,12 @@ def get_tool_definitions(ctx: ToolContext) -> list[dict]:
             "type": "function",
             "function": {
                 "name": "grep_raw",
-                "description": "在知识库原始文件中搜索包含指定关键词的行。当索引搜索找不到结果时，可用此工具直接全文搜索。",
+                "description": "在项目原始源文件（raw/sources 目录下）中搜索包含指定关键词的行，返回文件名和行号。当索引搜索找不到结果时，可用此工具直接全文搜索。",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "pattern": {"type": "string", "description": "搜索关键词或正则表达式"},
-                        "glob": {"type": "string", "description": "文件匹配模式，如 *.md 或 wiki/**/*.md", "default": "**/*.md"},
+                        "glob": {"type": "string", "description": "文件匹配模式", "default": "**/*.md"},
                     },
                     "required": ["pattern"],
                 },
@@ -219,34 +220,36 @@ async def _do_read(project: Project, page_path: str, source_type: str) -> dict:
 
 
 async def _do_read_raw(ctx: ToolContext, arguments: dict) -> dict:
-    """Read raw file content with offset/limit from any main project."""
+    """Read raw source file by line range from raw/sources/ directory."""
     file_path = arguments.get("path", "")
-    offset = max(0, arguments.get("offset", 0))
-    limit = min(arguments.get("limit", 4000), MAX_RAW_READ_CHARS)
+    start_line = max(1, arguments.get("start_line", 1))
+    line_count = min(max(1, arguments.get("line_count", 100)), MAX_RAW_READ_LINES)
 
     if ".." in file_path or file_path.startswith("/"):
         return {"error": "Invalid path"}
 
     for proj in ctx.main_projects:
-        full = Path(proj.disk_path) / file_path
+        full = Path(proj.disk_path) / RAW_SUBDIR / file_path
         if full.exists() and full.is_file():
             content = await _read_file(full)
-            total_len = len(content)
-            chunk = content[offset : offset + limit]
+            all_lines = content.split("\n")
+            total_lines = len(all_lines)
+            start_idx = start_line - 1
+            selected = all_lines[start_idx : start_idx + line_count]
             return {
                 "path": file_path,
-                "offset": offset,
-                "length": len(chunk),
-                "total_length": total_len,
-                "has_more": (offset + limit) < total_len,
-                "content": chunk,
+                "start_line": start_line,
+                "lines_returned": len(selected),
+                "total_lines": total_lines,
+                "has_more": (start_idx + line_count) < total_lines,
+                "content": "\n".join(selected),
             }
 
-    return {"error": f"File not found: {file_path}"}
+    return {"error": f"File not found in raw/sources: {file_path}"}
 
 
 async def _do_grep_raw(ctx: ToolContext, arguments: dict) -> dict:
-    """Grep through raw files in main projects for a pattern."""
+    """Grep through raw/sources/ files in main projects for a pattern."""
     pattern_str = arguments.get("pattern", "")
     glob_pattern = arguments.get("glob", "**/*.md")
 
@@ -261,8 +264,10 @@ async def _do_grep_raw(ctx: ToolContext, arguments: dict) -> dict:
     matches: list[dict] = []
 
     for proj in ctx.main_projects:
-        base = Path(proj.disk_path)
-        for file_path in sorted(base.glob(glob_pattern)):
+        raw_base = Path(proj.disk_path) / RAW_SUBDIR
+        if not raw_base.exists():
+            continue
+        for file_path in sorted(raw_base.glob(glob_pattern)):
             if not file_path.is_file() or file_path.name.startswith("."):
                 continue
             try:
@@ -271,7 +276,7 @@ async def _do_grep_raw(ctx: ToolContext, arguments: dict) -> dict:
                 continue
             for line_no, line in enumerate(text.split("\n"), 1):
                 if regex.search(line):
-                    rel = str(file_path.relative_to(base))
+                    rel = str(file_path.relative_to(raw_base))
                     matches.append({
                         "file": rel,
                         "line": line_no,

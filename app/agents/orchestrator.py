@@ -63,15 +63,15 @@ def _build_system_prompt(custom_prompt: str, has_ticket: bool) -> str:
     return policy
 
 
-_MAX_DEBUG_STR = 2000
+DEFAULT_DEBUG_RESULT_LIMIT = 2000
 
 
-def _truncate_for_debug(result: dict) -> dict:
+def _truncate_for_debug(result: dict, limit: int = DEFAULT_DEBUG_RESULT_LIMIT) -> dict:
     """Truncate long string values in tool results for SSE debug events."""
     out = {}
     for k, v in result.items():
-        if isinstance(v, str) and len(v) > _MAX_DEBUG_STR:
-            out[k] = v[:_MAX_DEBUG_STR] + f"\n... ({len(v)} chars total)"
+        if isinstance(v, str) and len(v) > limit:
+            out[k] = v[:limit] + f"\n... ({len(v)} chars total)"
         elif isinstance(v, list) and len(v) > 30:
             out[k] = v[:30]
             out[f"_{k}_truncated"] = f"{len(v)} items total, showing first 30"
@@ -94,6 +94,7 @@ async def run_agent_turn(
     ctx: ToolContext,
     *,
     max_tool_calls: int = DEFAULT_MAX_TOOL_CALLS,
+    debug_result_limit: int = DEFAULT_DEBUG_RESULT_LIMIT,
 ) -> AsyncGenerator[str, None]:
     """Run one agent turn: tool-calling loop then stream final answer.
 
@@ -157,7 +158,7 @@ async def run_agent_turn(
             else:
                 yield json.dumps({"tool_call": {"name": tc.name, "arguments": args}})
                 result = await execute_tool(tc.name, args, ctx)
-                yield json.dumps({"tool_result": {"name": tc.name, "result": _truncate_for_debug(result)}})
+                yield json.dumps({"tool_result": {"name": tc.name, "result": _truncate_for_debug(result, debug_result_limit)}})
                 traces.append(ToolTrace(name=tc.name, arguments=args, result=result))
 
                 if tc.name in ("search_ticket_cases", "read_ticket_page"):
