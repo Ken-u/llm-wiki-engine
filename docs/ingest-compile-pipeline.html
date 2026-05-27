@@ -1,0 +1,646 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Wiki Compile / Ingest Pipeline</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f1e8;
+      --panel: #fffaf2;
+      --panel-strong: #fffdf8;
+      --text: #2f2418;
+      --muted: #6c5a46;
+      --line: #e2d2bc;
+      --accent: #d46b08;
+      --accent-soft: #fff1df;
+      --code: #2a2118;
+      --shadow: 0 18px 40px rgba(92, 62, 29, 0.08);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: "Noto Serif SC", "Source Han Serif SC", "Songti SC", serif;
+      background:
+        radial-gradient(circle at top left, rgba(212, 107, 8, 0.08), transparent 28%),
+        linear-gradient(180deg, #fbf7f0 0%, var(--bg) 100%);
+      color: var(--text);
+      line-height: 1.72;
+    }
+
+    .page {
+      width: min(1120px, calc(100vw - 32px));
+      margin: 32px auto 56px;
+    }
+
+    .hero {
+      background: linear-gradient(135deg, rgba(255, 250, 242, 0.95), rgba(255, 244, 228, 0.92));
+      border: 1px solid rgba(212, 107, 8, 0.18);
+      border-radius: 28px;
+      box-shadow: var(--shadow);
+      padding: 32px 32px 26px;
+    }
+
+    .eyebrow {
+      display: inline-block;
+      margin: 0 0 14px;
+      padding: 6px 12px;
+      border-radius: 999px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+    }
+
+    h1, h2, h3 {
+      font-weight: 700;
+      letter-spacing: 0.01em;
+      line-height: 1.25;
+      margin: 0;
+    }
+
+    h1 {
+      font-size: clamp(32px, 4vw, 48px);
+      margin-bottom: 14px;
+    }
+
+    h2 {
+      font-size: 26px;
+      margin-bottom: 16px;
+    }
+
+    h3 {
+      font-size: 20px;
+      margin-bottom: 12px;
+    }
+
+    p {
+      margin: 0 0 14px;
+    }
+
+    .lead {
+      max-width: 860px;
+      font-size: 18px;
+      color: var(--muted);
+    }
+
+    .summary {
+      margin-top: 22px;
+      padding: 18px 20px;
+      background: var(--panel-strong);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+    }
+
+    .toc {
+      margin-top: 24px;
+      padding: 22px 24px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      box-shadow: var(--shadow);
+    }
+
+    .toc ol {
+      margin: 14px 0 0;
+      padding-left: 22px;
+      columns: 2;
+      column-gap: 32px;
+    }
+
+    .toc li {
+      margin-bottom: 8px;
+      break-inside: avoid;
+    }
+
+    .section {
+      margin-top: 22px;
+      padding: 28px 30px;
+      background: rgba(255, 250, 242, 0.94);
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      box-shadow: var(--shadow);
+    }
+
+    .callout {
+      margin: 18px 0;
+      padding: 16px 18px;
+      background: var(--accent-soft);
+      border-left: 4px solid var(--accent);
+      border-radius: 14px;
+    }
+
+    ul, ol {
+      margin: 0 0 14px;
+      padding-left: 22px;
+    }
+
+    li {
+      margin-bottom: 8px;
+    }
+
+    code {
+      font-family: "SFMono-Regular", "Menlo", "Consolas", monospace;
+      font-size: 0.95em;
+      color: var(--code);
+      background: rgba(212, 107, 8, 0.08);
+      padding: 0.1em 0.38em;
+      border-radius: 6px;
+    }
+
+    pre {
+      margin: 16px 0 18px;
+      padding: 18px 20px;
+      overflow: auto;
+      background: #241c14;
+      color: #f7ead7;
+      border-radius: 16px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+    }
+
+    pre code {
+      background: transparent;
+      color: inherit;
+      padding: 0;
+    }
+
+    .grid {
+      display: grid;
+      gap: 16px;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      margin-top: 18px;
+    }
+
+    .card {
+      padding: 16px 18px;
+      background: var(--panel-strong);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+    }
+
+    .card strong {
+      display: block;
+      margin-bottom: 8px;
+      color: var(--accent);
+    }
+
+    .footer {
+      margin-top: 26px;
+      color: var(--muted);
+      font-size: 14px;
+      text-align: center;
+    }
+
+    @media (max-width: 820px) {
+      .page {
+        width: min(100vw - 20px, 1120px);
+        margin: 16px auto 32px;
+      }
+
+      .hero,
+      .toc,
+      .section {
+        padding: 22px 18px;
+        border-radius: 20px;
+      }
+
+      .toc ol {
+        columns: 1;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <section class="hero">
+      <div class="eyebrow">llm-wiki-engine / docs</div>
+      <h1>Wiki Compile / Ingest Pipeline</h1>
+      <p class="lead">本文档描述 <code>llm-wiki-engine</code> 当前实际运行的 wiki 编译流程。这里的“编译”就是把 <code>raw/sources/</code> 里的原始文档解析、送入 LLM、生成 <code>wiki/</code> 下的结构化页面，并重新做 embedding。</p>
+      <div class="summary">
+        <p>这份说明基于当前代码实现整理，不是未来规划。重点回答几个问题：</p>
+        <ul>
+          <li>编译入口在哪里</li>
+          <li>是否是 Agent / toolcall</li>
+          <li>原始文档如何进入 prompt</li>
+          <li>大文档如何避免上下文爆炸</li>
+          <li>LLM 输出如何被解析、落盘、合并</li>
+          <li>失败后如何重试和恢复</li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="toc">
+      <h2>目录</h2>
+      <ol>
+        <li>结论先说</li>
+        <li>相关代码入口</li>
+        <li>项目目录约定</li>
+        <li>API 层如何触发编译</li>
+        <li>Job 和队列模型</li>
+        <li>主流程总览</li>
+        <li>解析原始文档</li>
+        <li>缓存机制</li>
+        <li>Checkpoint 机制</li>
+        <li>编译前读入哪些上下文</li>
+        <li>原始文档如何进入 prompt</li>
+        <li>Step 1: Analysis</li>
+        <li>Step 2: Generation</li>
+        <li>解析 LLM 输出</li>
+        <li>写文件与页面合并</li>
+        <li>Embedding 阶段</li>
+        <li>最终收尾</li>
+        <li>重试和恢复的实际行为</li>
+        <li>当前流程里实际有几次 LLM 调用</li>
+        <li>当前流程不是 Agent 的具体原因</li>
+        <li>当前实现的主要限制</li>
+        <li>一次完整编译的时序图</li>
+        <li>如果你要继续优化 ingest，应该先看哪里</li>
+        <li>简短总结</li>
+      </ol>
+    </section>
+
+    <section class="section">
+      <h2>1. 结论先说</h2>
+      <div class="callout">
+        <strong>当前编译流程不是 Agent，也没有使用 toolcall 编排。</strong>
+      </div>
+      <p>它是一条固定的后端流水线：</p>
+      <ol>
+        <li>读取源文档并解析成文本</li>
+        <li>做缓存判断</li>
+        <li>调用 LLM 做第 1 步分析</li>
+        <li>调用 LLM 做第 2 步生成</li>
+        <li>解析 <code>---FILE: ... ---</code> 输出块</li>
+        <li>把页面写入 <code>wiki/</code></li>
+        <li>对已有页面做 frontmatter 合并，必要时再调用一次 LLM 合并正文</li>
+        <li>重新生成 embedding</li>
+      </ol>
+      <p>换句话说，当前 ingest 更接近“大 prompt 编译器”，而不是“模型自主决定下一步做什么”的 Agent。</p>
+    </section>
+
+    <section class="section">
+      <h2>2. 相关代码入口</h2>
+      <div class="grid">
+        <div class="card"><strong>API 入口</strong><code>app/ingest/router.py</code></div>
+        <div class="card"><strong>队列与重试</strong><code>app/ingest/queue.py</code></div>
+        <div class="card"><strong>主流程</strong><code>app/ingest/pipeline.py</code></div>
+        <div class="card"><strong>Prompt 构造</strong><code>app/ingest/prompts.py</code></div>
+        <div class="card"><strong>输出解析</strong><code>app/ingest/parser.py</code></div>
+        <div class="card"><strong>写入与合并</strong><code>app/ingest/writer.py</code></div>
+        <div class="card"><strong>文档解析</strong><code>app/documents/parser.py</code></div>
+        <div class="card"><strong>LLM 客户端</strong><code>app/llm/client.py</code></div>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2>3. 项目目录约定</h2>
+      <pre><code>&lt;project&gt;/
+  purpose.md
+  schema.md
+  raw/
+    sources/
+      *.pdf / *.docx / *.md / *.xlsx / ...
+  wiki/
+    index.md
+    overview.md
+    log.md
+    entities/
+    concepts/
+    sources/
+    queries/
+    comparisons/
+    synthesis/
+  .llm-wiki/
+    ingest-cache.json
+    checkpoints/</code></pre>
+      <p>编译时真正被读入上下文的项目级文件主要是：</p>
+      <ul>
+        <li><code>purpose.md</code></li>
+        <li><code>schema.md</code></li>
+        <li><code>wiki/index.md</code></li>
+        <li><code>wiki/overview.md</code></li>
+      </ul>
+    </section>
+
+    <section class="section">
+      <h2>4. API 层如何触发编译</h2>
+      <p>入口在 <code>POST /api/projects/{project_id}/ingest</code>，实现位置是 <code>app/ingest/router.py</code>。</p>
+      <ul>
+        <li>先校验用户是否属于项目</li>
+        <li>读取项目磁盘目录 <code>project.disk_path</code></li>
+        <li>默认扫描 <code>&lt;project&gt;/raw/sources/</code> 下的所有源文件</li>
+        <li>如果请求里带了 <code>source_file</code>，则只编译该文件</li>
+        <li>每个源文件创建一个独立 ingest job</li>
+        <li>API 返回 <code>202 Accepted</code>，实际处理异步执行</li>
+      </ul>
+      <p>补充接口：</p>
+      <ul>
+        <li><code>POST /api/projects/{project_id}/ingest/{job_id}/retry</code></li>
+        <li><code>GET /api/projects/{project_id}/ingest/status</code></li>
+        <li><code>GET /api/projects/{project_id}/ingest/history</code></li>
+      </ul>
+    </section>
+
+    <section class="section">
+      <h2>5. Job 和队列模型</h2>
+      <p>任务模型在 <code>app/ingest/models.py</code> 的 <code>IngestJob</code>。</p>
+      <div class="grid">
+        <div class="card"><strong>status</strong><code>pending / processing / done / failed / superseded</code></div>
+        <div class="card"><strong>progress</strong>当前进度文案，面向 UI 展示</div>
+        <div class="card"><strong>step</strong><code>0=queued 1=analysis_done 2=generation_done 3=written</code></div>
+        <div class="card"><strong>files_written</strong>本次最终写入的 wiki 文件路径列表</div>
+        <div class="card"><strong>retry_count</strong>当前重试次数</div>
+      </div>
+      <p>队列在 <code>app/ingest/queue.py</code>，关键行为如下：</p>
+      <ul>
+        <li>同一项目串行执行，避免多个任务同时改 <code>wiki/index.md</code> 或 <code>wiki/overview.md</code></li>
+        <li>不同项目可并行</li>
+        <li>服务启动时会恢复数据库里处于 <code>pending</code> 或 <code>processing</code> 的任务</li>
+        <li><code>MAX_RETRIES = 2</code>，失败自动重试，且从上次完成 step 继续</li>
+      </ul>
+    </section>
+
+    <section class="section">
+      <h2>6. 主流程总览</h2>
+      <p>主函数是 <code>app/ingest/pipeline.py</code> 中的 <code>auto_ingest()</code>。</p>
+      <pre><code>Parse document
+  -&gt; Cache check
+  -&gt; Load checkpoint
+  -&gt; Read project context
+  -&gt; Truncate source text
+  -&gt; Step 1: Analysis
+  -&gt; Step 2: Generation
+  -&gt; Parse FILE blocks
+  -&gt; Write files
+  -&gt; Embed pages
+  -&gt; Update cache
+  -&gt; Remove checkpoint</code></pre>
+    </section>
+
+    <section class="section">
+      <h2>7. 解析原始文档</h2>
+      <p>原始文档解析在 <code>app/documents/parser.py</code>。</p>
+      <ul>
+        <li>PDF: <code>PyMuPDF</code></li>
+        <li>DOCX: <code>python-docx</code></li>
+        <li>XLSX / XLS: <code>openpyxl</code></li>
+        <li>TXT / MD / MARKDOWN / RST / CSV / JSON / YAML / YML: 直接按文本读取</li>
+        <li>其他后缀：回退到按文本读取</li>
+      </ul>
+      <p>如果解析后内容为空，任务会直接跳过，不会进入后续 LLM 阶段。</p>
+    </section>
+
+    <section class="section">
+      <h2>8. 缓存机制</h2>
+      <p>缓存逻辑在 <code>app/ingest/cache.py</code>。</p>
+      <ul>
+        <li>对源文档内容做哈希</li>
+        <li>以 <code>source_identity = 源文件名</code> 作为索引键</li>
+        <li>落到 <code>.llm-wiki/ingest-cache.json</code></li>
+      </ul>
+      <p>命中缓存时当前文件不会重新分析和生成，旧 checkpoint 会被删除，<code>auto_ingest()</code> 直接返回空列表。</p>
+      <div class="callout">
+        <strong>注意：</strong>如果只是 prompt 或生成逻辑变化，而源文档没变，缓存会导致跳过，需要手动处理缓存或变更源内容。
+      </div>
+    </section>
+
+    <section class="section">
+      <h2>9. Checkpoint 机制</h2>
+      <p>checkpoint 文件位于：</p>
+      <pre><code>.llm-wiki/checkpoints/&lt;sha256(source_path)前16位&gt;.json</code></pre>
+      <p>存储内容包括 <code>step</code>、<code>source</code>、<code>analysis</code>、<code>generation</code>。</p>
+      <p>主流程会比较数据库中的 <code>job.step</code> 和 checkpoint 中的 <code>step</code>，取两者最大值作为 <code>effective_step</code>，用于从中间状态恢复。</p>
+    </section>
+
+    <section class="section">
+      <h2>10. 编译前读入哪些上下文</h2>
+      <p>在真正调 LLM 之前，系统会读取这些项目文件：</p>
+      <ul>
+        <li><code>purpose.md</code></li>
+        <li><code>wiki/index.md</code></li>
+        <li><code>wiki/overview.md</code></li>
+        <li><code>schema.md</code></li>
+      </ul>
+      <p>这些文件分别用来约束目标、告知现有页面结构、更新 overview，以及约束生成格式。</p>
+    </section>
+
+    <section class="section">
+      <h2>11. 原始文档如何进入 prompt</h2>
+      <p>当前实现里，解析出来的原始文本会直接拼进 prompt，但会先做截断：</p>
+      <pre><code>max_content_chars = 100_000
+truncated = content[:max_content_chars] if len(content) &gt; max_content_chars else content</code></pre>
+      <ul>
+        <li>当前不是按 chunk 多轮处理</li>
+        <li>也不是检索式编译</li>
+        <li>而是把文档前 <code>100000</code> 个字符作为 source context 直接送给模型</li>
+      </ul>
+      <div class="callout">
+        <strong>代价：</strong>大文档后半段可能根本不会进入模型上下文，这也是当前编译质量瓶颈之一。
+      </div>
+    </section>
+
+    <section class="section">
+      <h2>12. Step 1: Analysis</h2>
+      <p>analysis prompt 在 <code>app/ingest/prompts.py</code> 的 <code>build_analysis_prompt()</code> 中构造。</p>
+      <p>输入包括：</p>
+      <ul>
+        <li><code>purpose.md</code></li>
+        <li><code>wiki/index.md</code></li>
+        <li>截断后的 <code>source_content</code></li>
+        <li>当前源文件名</li>
+      </ul>
+      <p>模型被要求分析 key entities、key concepts、main arguments、与现有 wiki 的关系、潜在矛盾和建议更新项。</p>
+      <p>这一阶段输出只是普通文本，不是结构化 JSON，也不是 tool result。</p>
+      <p>语言规则由文档前 2000 字的 CJK 比例启发式判断，中文比例高则强制中文输出，否则要求英文输出。</p>
+    </section>
+
+    <section class="section">
+      <h2>13. Step 2: Generation</h2>
+      <p>generation prompt 在 <code>app/ingest/prompts.py</code> 的 <code>build_generation_prompt()</code>。</p>
+      <p>输入包括：</p>
+      <ul>
+        <li><code>schema.md</code></li>
+        <li><code>purpose.md</code></li>
+        <li><code>wiki/index.md</code></li>
+        <li><code>wiki/overview.md</code></li>
+        <li>源文件名</li>
+        <li>step 1 的 <code>analysis</code></li>
+        <li>截断后的原始文档文本</li>
+      </ul>
+      <p>模型被要求一次性生成：</p>
+      <ol>
+        <li>一个 source summary 页面</li>
+        <li>若干 entity 页面</li>
+        <li>若干 concept 页面</li>
+        <li>更新后的 <code>wiki/index.md</code></li>
+        <li>追加到 <code>wiki/log.md</code> 的 log entry</li>
+        <li>更新后的 <code>wiki/overview.md</code></li>
+      </ol>
+      <p>默认 source summary 路径为：</p>
+      <pre><code>wiki/sources/&lt;源文件名去后缀&gt;.md</code></pre>
+      <p>输出必须严格遵守 FILE block / REVIEW block 格式，并带完整 YAML frontmatter。</p>
+    </section>
+
+    <section class="section">
+      <h2>14. 解析 LLM 输出</h2>
+      <p>解析逻辑在 <code>app/ingest/parser.py</code>。</p>
+      <ul>
+        <li>识别 <code>---FILE: ... ---</code> 和 <code>---END FILE---</code></li>
+        <li>识别 <code>---REVIEW: ... ---</code> 和 <code>---END REVIEW---</code></li>
+        <li>自动关闭未闭合的 FILE block</li>
+        <li>收集 warning</li>
+        <li>拒绝不安全路径</li>
+      </ul>
+      <p>只有 <code>wiki/</code> 开头的相对路径会被接受。绝对路径、盘符路径、<code>..</code>、控制字符或非 <code>wiki/</code> 路径都会被拒绝。</p>
+      <p>如果 generation 输出里一个合法 FILE block 都没有，本次任务不会写任何文件。</p>
+    </section>
+
+    <section class="section">
+      <h2>15. 写文件与页面合并</h2>
+      <p>落盘逻辑在 <code>app/ingest/writer.py</code>。</p>
+      <ul>
+        <li>目标文件不存在时直接写入</li>
+        <li><code>wiki/log.md</code> 特殊处理，总是 append</li>
+        <li>已有页面会先合并 frontmatter，再决定正文如何处理</li>
+      </ul>
+      <p>frontmatter 合并规则：</p>
+      <ul>
+        <li><code>tags</code> 取并集</li>
+        <li><code>related</code> 取并集</li>
+        <li><code>sources</code> 取并集</li>
+        <li>其余字段默认新值覆盖旧值</li>
+      </ul>
+      <p><code>wiki/index.md</code> 和 <code>wiki/overview.md</code> 使用 incoming body 直接覆盖正文。</p>
+      <p>其他已存在页面会再发起一次 LLM merge，把旧页面和新页面合成一份。如果 merge 失败，则回退成“本次 incoming 正文 + 合并后的 frontmatter”。</p>
+    </section>
+
+    <section class="section">
+      <h2>16. Embedding 阶段</h2>
+      <p>写完页面后，<code>auto_ingest()</code> 会调用 <code>embed_pages(project_dir, written)</code>。</p>
+      <ul>
+        <li>只对本次写入的页面做 embedding</li>
+        <li>embedding 失败是 non-fatal</li>
+        <li>即使 embedding 报错，ingest 仍会完成并更新缓存</li>
+      </ul>
+      <p>这意味着页面写盘和 embedding 不是一个事务，可能出现“页面已更新，但 embedding 暂时没更新”的短暂不一致。</p>
+    </section>
+
+    <section class="section">
+      <h2>17. 最终收尾</h2>
+      <p>所有主要步骤成功后，系统会：</p>
+      <ol>
+        <li>更新 <code>.llm-wiki/ingest-cache.json</code></li>
+        <li>删除对应 checkpoint 文件</li>
+      </ol>
+      <p>数据库中的 job 状态会被更新为：</p>
+      <ul>
+        <li><code>status = done</code></li>
+        <li><code>progress = Complete</code></li>
+        <li><code>step = 3</code></li>
+        <li><code>files_written = [...]</code></li>
+        <li><code>completed_at = 当前时间</code></li>
+      </ul>
+    </section>
+
+    <section class="section">
+      <h2>18. 重试和恢复的实际行为</h2>
+      <p>失败自动重试时，队列会读取数据库里的 <code>retry_count</code> 和当前 <code>job.step</code>：</p>
+      <ul>
+        <li>若未超过 <code>MAX_RETRIES</code>，则状态改回 <code>pending</code></li>
+        <li><code>progress</code> 更新为 <code>Retry x/y</code></li>
+        <li>使用当前 <code>job.step</code> 作为 <code>resume_step</code> 继续执行</li>
+      </ul>
+      <p>服务重启后，<code>recover_interrupted_jobs()</code> 会扫描数据库中处于 <code>pending</code> 或 <code>processing</code> 的任务，并结合项目磁盘路径重新入队。</p>
+    </section>
+
+    <section class="section">
+      <h2>19. 当前流程里实际有几次 LLM 调用</h2>
+      <p>单个源文档最常见的情况是 2 次：</p>
+      <ol>
+        <li>analysis</li>
+        <li>generation</li>
+      </ol>
+      <p>如果命中了已有页面合并，则每个需要 merge 的已有页面还会额外再调一次 LLM。</p>
+    </section>
+
+    <section class="section">
+      <h2>20. 当前流程不是 Agent 的具体原因</h2>
+      <p>虽然 <code>app/llm/client.py</code> 里已经有 <code>complete_with_tools()</code>，底层也具备 toolcall 能力，但 ingest 现在没有使用它。</p>
+      <ul>
+        <li>后端固定写死执行顺序</li>
+        <li>模型不能自主决定下一步查什么、读什么、写什么</li>
+        <li>没有 tool schema 暴露给模型</li>
+        <li>没有多轮 tool orchestration</li>
+        <li>没有运行时知识源调用决策</li>
+      </ul>
+    </section>
+
+    <section class="section">
+      <h2>21. 当前实现的主要限制</h2>
+      <div class="grid">
+        <div class="card"><strong>大文档依赖截断</strong>只取前 <code>100000</code> 字符进入 prompt，超出部分直接忽略。</div>
+        <div class="card"><strong>analysis 非结构化</strong>step 1 结果不是严格 schema 化的 facts。</div>
+        <div class="card"><strong>generation 强依赖格式</strong>只要模型不按 FILE block 输出，后续就无法正常写盘。</div>
+        <div class="card"><strong>merge 仍依赖 LLM</strong>已有页面合并不是 deterministic merge。</div>
+        <div class="card"><strong>review block 没闭环</strong>当前不会把 REVIEW 转成真正的人工审阅任务。</div>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2>22. 一次完整编译的时序图</h2>
+      <pre><code>User/API
+  -&gt; ingest router
+  -&gt; ingest queue
+  -&gt; auto_ingest()
+     -&gt; parse_document()
+     -&gt; check_cache()
+     -&gt; load_checkpoint()
+     -&gt; read purpose/index/overview/schema
+     -&gt; truncate source text
+     -&gt; LLM analysis
+     -&gt; save checkpoint(step=1)
+     -&gt; LLM generation
+     -&gt; save checkpoint(step=2)
+     -&gt; parse FILE blocks
+     -&gt; write_file_blocks()
+        -&gt; optional LLM merge for existing pages
+     -&gt; embed_pages()
+     -&gt; update_cache()
+     -&gt; remove_checkpoint()
+  -&gt; update ingest_jobs(status=done)</code></pre>
+    </section>
+
+    <section class="section">
+      <h2>23. 如果你要继续优化 ingest，应该先看哪里</h2>
+      <ol>
+        <li><code>app/ingest/pipeline.py</code>：决定主流程、截断方式、checkpoint 和上下文装配</li>
+        <li><code>app/ingest/prompts.py</code>：决定 analysis / generation / merge 的行为边界</li>
+        <li><code>app/ingest/writer.py</code>：决定已有页面怎么合并、哪些页面特殊处理</li>
+        <li><code>app/documents/parser.py</code>：决定原始文档被解析成什么文本</li>
+        <li><code>app/ingest/parser.py</code>：决定 LLM 输出格式容错和路径安全</li>
+      </ol>
+    </section>
+
+    <section class="section">
+      <h2>24. 简短总结</h2>
+      <ul>
+        <li>它不是 Agent</li>
+        <li>它是固定的两阶段 LLM 编译流水线</li>
+        <li>原始文档文本会直接进入 prompt，但最多只取前 <code>100000</code> 字符</li>
+        <li>输出必须是严格的 FILE block</li>
+        <li>已有页面会在写盘阶段再次做 LLM merge</li>
+        <li>队列支持同项目串行、失败重试、服务重启恢复</li>
+      </ul>
+      <p>如果后续要把 ingest 改成 Agent 或 toolcall 架构，这份文档描述的就是当前基线行为。</p>
+    </section>
+
+    <p class="footer">Generated from current implementation in <code>llm-wiki-engine</code>. Update this file when ingest behavior changes.</p>
+  </main>
+</body>
+</html>

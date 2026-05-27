@@ -63,6 +63,23 @@ def _build_system_prompt(custom_prompt: str, has_ticket: bool) -> str:
     return policy
 
 
+_MAX_DEBUG_STR = 2000
+
+
+def _truncate_for_debug(result: dict) -> dict:
+    """Truncate long string values in tool results for SSE debug events."""
+    out = {}
+    for k, v in result.items():
+        if isinstance(v, str) and len(v) > _MAX_DEBUG_STR:
+            out[k] = v[:_MAX_DEBUG_STR] + f"\n... ({len(v)} chars total)"
+        elif isinstance(v, list) and len(v) > 30:
+            out[k] = v[:30]
+            out[f"_{k}_truncated"] = f"{len(v)} items total, showing first 30"
+        else:
+            out[k] = v
+    return out
+
+
 def _done_event(traces: list[ToolTrace]) -> str:
     return json.dumps({
         "done": True,
@@ -129,15 +146,18 @@ async def run_agent_turn(
 
             if tool_call_count >= max_tool_calls:
                 yield json.dumps({"tool_call": {"name": tc.name, "arguments": args, "rejected": True}})
+                reject_result = {"rejected": True, "message": REJECT_MSG}
+                yield json.dumps({"tool_result": {"name": tc.name, "result": reject_result}})
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tc.id,
                     "content": REJECT_MSG,
                 })
-                traces.append(ToolTrace(name=tc.name, arguments=args, result={"rejected": True}))
+                traces.append(ToolTrace(name=tc.name, arguments=args, result=reject_result))
             else:
                 yield json.dumps({"tool_call": {"name": tc.name, "arguments": args}})
                 result = await execute_tool(tc.name, args, ctx)
+                yield json.dumps({"tool_result": {"name": tc.name, "result": _truncate_for_debug(result)}})
                 traces.append(ToolTrace(name=tc.name, arguments=args, result=result))
 
                 if tc.name in ("search_ticket_cases", "read_ticket_page"):
