@@ -124,21 +124,77 @@ def _parse_tool_call(tc: ToolCallResult) -> CompilerOutput:
     )
 
 
+def _fallback_parse_content(content: str) -> CompilerOutput | None:
+    """Try to extract repair from plain text when the LLM ignores tool calling."""
+    import json as _json
+    import re
+
+    for pattern in [
+        r"```(?:json)?\s*(\{.*?\})\s*```",
+        r"(\{[^{}]*\"proposed_content\"[^{}]*\})",
+    ]:
+        m = re.search(pattern, content, re.DOTALL)
+        if m:
+            try:
+                data = _json.loads(m.group(1))
+                if "proposed_content" in data:
+                    return CompilerOutput(
+                        proposed_content=data["proposed_content"],
+                        change_summary=data.get("change_summary", ""),
+                        confidence=data.get("confidence", "low"),
+                        sections_modified=data.get("sections_modified", []),
+                        raw=data,
+                    )
+            except _json.JSONDecodeError:
+                continue
+
+    lines = content.strip().splitlines()
+    if len(lines) > 3:
+        return CompilerOutput(
+            proposed_content=content.strip(),
+            change_summary="(auto-extracted from LLM plain-text output)",
+            confidence="low",
+            sections_modified=[],
+            raw={"proposed_content": content.strip()},
+        )
+
+    return None
+
+
+_MAX_RETRIES = 2
+
+
 async def run_compiler(
     inp: CompilerInput,
     cfg: FeedbackModelConfig,
 ) -> CompilerOutput:
     """Run the compiler agent. Returns parsed repair candidate."""
     messages = _build_compiler_prompt(inp)
-    resp = await complete_with_tools(
-        messages=messages,
-        tools=[SUBMIT_REPAIR_TOOL],
-        cfg=cfg,
-    )
+    tool_choice = {"type": "function", "function": {"name": "submit_repair"}}
 
-    for tc in resp.tool_calls:
-        if tc.name == "submit_repair":
-            return _parse_tool_call(tc)
+    last_content = ""
+    for attempt in range(_MAX_RETRIES + 1):
+        resp = await complete_with_tools(
+            messages=messages,
+            tools=[SUBMIT_REPAIR_TOOL],
+            cfg=cfg,
+            tool_choice=tool_choice if attempt == 0 else "required",
+        )
 
-    logger.warning("Compiler did not call submit_repair tool")
+        for tc in resp.tool_calls:
+            if tc.name == "submit_repair":
+                return _parse_tool_call(tc)
+
+        last_content = resp.content or ""
+        logger.warning(
+            "Compiler attempt %d/%d: no submit_repair tool call",
+            attempt + 1, _MAX_RETRIES + 1,
+        )
+
+    if last_content:
+        fb = _fallback_parse_content(last_content)
+        if fb is not None:
+            logger.info("Compiler: used fallback content extraction")
+            return fb
+
     raise RuntimeError("Compiler did not produce structured repair output via tool call")

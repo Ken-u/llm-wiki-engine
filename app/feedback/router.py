@@ -39,6 +39,7 @@ class FeedbackTaskDetailResponse(FeedbackTaskResponse):
     assistant_answer: str
     evaluator_result: dict | None = None
     repair_candidate: dict | None = None
+    existing_page_content: str | None = None
     review_guidance: str | None = None
     reject_reason: str | None = None
     error: str | None = None
@@ -91,6 +92,8 @@ async def get_feedback_task(
     if not task or task.project_id != project_id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Feedback task not found")
 
+    existing_content = await _read_existing_page(db, task)
+
     return FeedbackTaskDetailResponse(
         id=task.id,
         conversation_id=task.conversation_id,
@@ -105,6 +108,7 @@ async def get_feedback_task(
         assistant_answer=task.assistant_answer,
         evaluator_result=_safe_json(task.evaluator_result_json),
         repair_candidate=_safe_json(task.repair_candidate_json),
+        existing_page_content=existing_content,
         review_guidance=task.review_guidance,
         reject_reason=task.reject_reason,
         error=task.error,
@@ -140,6 +144,47 @@ async def review_feedback_task(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Unknown action: {body.action}")
 
 
+@router.delete("/{task_id}")
+async def delete_feedback_task(
+    project_id: str,
+    task_id: str,
+    _user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    task = await service.get_task(db, task_id)
+    if not task or task.project_id != project_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Feedback task not found")
+    await service.delete_task(db, task)
+    return {"status": "deleted"}
+
+
+@router.post("/{task_id}/recompile")
+async def force_recompile(
+    project_id: str,
+    task_id: str,
+    _user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Force trigger recompilation regardless of current status."""
+    task = await service.get_task(db, task_id)
+    if not task or task.project_id != project_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Feedback task not found")
+
+    recompilable = {"evaluation_done", "pending_review", "compile_failed", "rejected"}
+    if task.status not in recompilable:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"Cannot recompile from status '{task.status}'. Allowed: {recompilable}",
+        )
+
+    if task.status != "pending_recompile":
+        service.transition_status(task, "pending_recompile")
+        await db.commit()
+
+    asyncio.create_task(trigger_recompile(task.id))
+    return {"status": "pending_recompile"}
+
+
 @router.post("/{task_id}/apply")
 async def apply_feedback_task(
     project_id: str,
@@ -165,6 +210,29 @@ async def apply_feedback_task(
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, f"Failed to apply: {e}")
 
     return {"status": "applied"}
+
+
+async def _read_existing_page(db: AsyncSession, task) -> str | None:
+    """Read the current wiki page content for diff display."""
+    if not task.target_page_path:
+        return None
+    try:
+        import os
+        from sqlalchemy import select as _sel
+        from app.projects.models import Project
+
+        proj = (await db.execute(
+            _sel(Project).where(Project.id == task.project_id)
+        )).scalar_one_or_none()
+        if not proj:
+            return None
+        full_path = os.path.join(proj.disk_path, "wiki", task.target_page_path)
+        if os.path.isfile(full_path):
+            with open(full_path, "r", encoding="utf-8") as f:
+                return f.read()
+    except Exception:
+        pass
+    return None
 
 
 def _safe_json(raw: str | None) -> dict | None:

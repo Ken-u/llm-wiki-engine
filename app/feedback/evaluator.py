@@ -133,17 +133,25 @@ async def run_evaluator(
 ) -> EvaluatorOutput:
     """Run the evaluator agent. Returns parsed evaluation result."""
     messages = _build_evaluator_prompt(inp)
-    resp = await complete_with_tools(
-        messages=messages,
-        tools=[SUBMIT_EVALUATION_TOOL],
-        cfg=cfg,
-    )
+    tool_choice = {"type": "function", "function": {"name": "submit_evaluation"}}
 
-    for tc in resp.tool_calls:
-        if tc.name == "submit_evaluation":
-            return _parse_tool_call(tc)
+    for attempt in range(2):
+        resp = await complete_with_tools(
+            messages=messages,
+            tools=[SUBMIT_EVALUATION_TOOL],
+            cfg=cfg,
+            tool_choice=tool_choice if attempt == 0 else "required",
+        )
 
-    logger.warning("Evaluator did not call submit_evaluation tool, defaulting to no-repair")
+        for tc in resp.tool_calls:
+            if tc.name == "submit_evaluation":
+                return _parse_tool_call(tc)
+
+        logger.warning(
+            "Evaluator attempt %d/2: no submit_evaluation tool call", attempt + 1
+        )
+
+    logger.warning("Evaluator exhausted retries, defaulting to no-repair")
     return EvaluatorOutput(
         needs_repair=False,
         target_page_path="",

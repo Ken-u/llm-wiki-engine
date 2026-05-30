@@ -132,6 +132,11 @@ async def _run_repair(task_id: str) -> None:
         if not task:
             return
 
+        if task.status not in ("pending_recompile",):
+            service.transition_status(task, "pending_recompile")
+            await db.commit()
+            await db.refresh(task)
+
         evaluator_result = json.loads(task.evaluator_result_json or "{}")
 
         existing_content: str | None = None

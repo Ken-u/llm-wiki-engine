@@ -103,6 +103,7 @@ _TRANSITIONS: dict[str, set[str]] = {
     "pending_review": {"approved", "rejected", "pending_recompile"},
     "pending_recompile": {"pending_review", "compile_failed"},
     "approved": {"applied"},
+    "rejected": {"pending_recompile"},
     "compile_failed": {"pending_recompile", "rejected"},
 }
 
@@ -175,6 +176,11 @@ async def mark_compile_failed(
 ) -> None:
     task.error = error
     transition_status(task, "compile_failed")
+    await db.commit()
+
+
+async def delete_task(db: AsyncSession, task: FeedbackTask) -> None:
+    await db.delete(task)
     await db.commit()
 
 

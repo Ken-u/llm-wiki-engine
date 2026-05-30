@@ -70,14 +70,21 @@ async def complete_with_tools(
     messages: list[dict],
     tools: list[dict],
     cfg: FeedbackModelConfig,
+    *,
+    tool_choice: dict | str | None = None,
 ) -> FeedbackLLMResponse:
     """Call LLM with tool definitions using feedback-specific model config.
 
     Returns structured response. Tool call arguments are automatically
     parsed from JSON strings into dicts.
+
+    ``tool_choice`` can be "auto", "required", or a specific function
+    selector like ``{"type": "function", "function": {"name": "xxx"}}``.
     """
     kwargs = _build_kwargs(cfg)
     kwargs["tools"] = tools
+    if tool_choice is not None:
+        kwargs["tool_choice"] = tool_choice
 
     resp = await litellm.acompletion(messages=messages, **kwargs)
     choice = resp.choices[0]
