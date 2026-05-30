@@ -28,6 +28,7 @@ async def init_db() -> None:
     from app.ingest.models import IngestJob  # noqa: F401
     from app.projects.models import Project, ProjectMember  # noqa: F401
     from app.agents.models import Agent, AgentProject  # noqa: F401
+    from app.feedback.models import FeedbackTask  # noqa: F401
 
     Path = __import__("pathlib").Path
     db_path = get_settings().database_url.replace("sqlite+aiosqlite:///", "")
@@ -94,6 +95,7 @@ async def _auto_migrate(conn) -> None:
     migrations = [
         ("ingest_jobs", "step", "INTEGER DEFAULT 0"),
         ("projects", "ticket_project_id", "TEXT DEFAULT NULL REFERENCES projects(id) ON DELETE SET NULL"),
+        ("projects", "feedback_enabled", "BOOLEAN DEFAULT 1"),
         ("agents", "max_tool_calls", "INTEGER DEFAULT 20"),
         ("agents", "debug_result_limit", "INTEGER DEFAULT 2000"),
         ("agents", "tool_labels", "TEXT DEFAULT '{}'"),

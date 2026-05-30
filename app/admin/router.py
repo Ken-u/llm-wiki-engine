@@ -226,3 +226,230 @@ def _resolve_key(new_key: str | None, current_key: str) -> str:
     if new_key is None or _is_masked(new_key):
         return current_key
     return new_key
+
+
+# ── Feedback model settings ──
+
+class FeedbackModelSettingsResponse(BaseModel):
+    evaluator_model: str | None
+    evaluator_provider: str | None
+    evaluator_api_key: str
+    evaluator_api_base: str | None
+    evaluator_temperature: float
+    evaluator_max_tokens: int
+    compiler_model: str | None
+    compiler_provider: str | None
+    compiler_api_key: str
+    compiler_api_base: str | None
+    compiler_temperature: float
+    compiler_max_tokens: int
+    enabled: bool
+    max_revisions: int
+    dedup_window_minutes: int
+
+
+class FeedbackModelSettingsUpdate(BaseModel):
+    evaluator_model: str | None = None
+    evaluator_provider: str | None = None
+    evaluator_api_key: str | None = None
+    evaluator_api_base: str | None = None
+    evaluator_temperature: float | None = None
+    evaluator_max_tokens: int | None = None
+    compiler_model: str | None = None
+    compiler_provider: str | None = None
+    compiler_api_key: str | None = None
+    compiler_api_base: str | None = None
+    compiler_temperature: float | None = None
+    compiler_max_tokens: int | None = None
+    enabled: bool | None = None
+    max_revisions: int | None = None
+    dedup_window_minutes: int | None = None
+
+
+def _feedback_response() -> FeedbackModelSettingsResponse:
+    cfg = get_config().feedback
+    return FeedbackModelSettingsResponse(
+        evaluator_model=cfg.evaluator.model,
+        evaluator_provider=cfg.evaluator.provider,
+        evaluator_api_key=_mask_key(cfg.evaluator.api_key or ""),
+        evaluator_api_base=cfg.evaluator.api_base,
+        evaluator_temperature=cfg.evaluator.temperature,
+        evaluator_max_tokens=cfg.evaluator.max_tokens,
+        compiler_model=cfg.compiler.model,
+        compiler_provider=cfg.compiler.provider,
+        compiler_api_key=_mask_key(cfg.compiler.api_key or ""),
+        compiler_api_base=cfg.compiler.api_base,
+        compiler_temperature=cfg.compiler.temperature,
+        compiler_max_tokens=cfg.compiler.max_tokens,
+        enabled=cfg.enabled,
+        max_revisions=cfg.max_revisions,
+        dedup_window_minutes=cfg.dedup_window_minutes,
+    )
+
+
+@router.get("/settings/feedback", response_model=FeedbackModelSettingsResponse)
+async def get_feedback_settings(user: User = Depends(require_admin)):
+    return _feedback_response()
+
+
+@router.put("/settings/feedback", response_model=FeedbackModelSettingsResponse)
+async def update_feedback_settings(body: FeedbackModelSettingsUpdate, user: User = Depends(require_admin)):
+    cfg = get_config().feedback
+    nested: dict = {"evaluator": {}, "compiler": {}}
+    top: dict = {}
+
+    field_map = {
+        "evaluator_model": ("evaluator", "model"),
+        "evaluator_provider": ("evaluator", "provider"),
+        "evaluator_api_key": ("evaluator", "api_key"),
+        "evaluator_api_base": ("evaluator", "api_base"),
+        "evaluator_temperature": ("evaluator", "temperature"),
+        "evaluator_max_tokens": ("evaluator", "max_tokens"),
+        "compiler_model": ("compiler", "model"),
+        "compiler_provider": ("compiler", "provider"),
+        "compiler_api_key": ("compiler", "api_key"),
+        "compiler_api_base": ("compiler", "api_base"),
+        "compiler_temperature": ("compiler", "temperature"),
+        "compiler_max_tokens": ("compiler", "max_tokens"),
+    }
+
+    raw = body.model_dump(exclude_none=True)
+    for flat_key, (group, attr) in field_map.items():
+        if flat_key in raw:
+            val = raw[flat_key]
+            if "api_key" in flat_key and _is_masked(str(val)):
+                continue
+            nested[group][attr] = val
+
+    for k in ("enabled", "max_revisions", "dedup_window_minutes"):
+        if k in raw:
+            top[k] = raw[k]
+
+    values = {**top}
+    if nested["evaluator"]:
+        values["evaluator"] = nested["evaluator"]
+    if nested["compiler"]:
+        values["compiler"] = nested["compiler"]
+
+    if values:
+        await save_db_settings("feedback", values)
+
+    return _feedback_response()
+
+
+@router.post("/settings/feedback/test", response_model=TestResult)
+async def test_feedback_model(body: FeedbackModelSettingsUpdate, user: User = Depends(require_admin)):
+    """Test feedback evaluator/compiler LLM connection."""
+    import litellm
+    main_cfg = get_config().llm
+    fb_cfg = get_config().feedback
+
+    eval_model = body.evaluator_model or fb_cfg.evaluator.model or main_cfg.model
+    eval_provider = body.evaluator_provider or fb_cfg.evaluator.provider or main_cfg.provider
+    eval_key = _resolve_key(body.evaluator_api_key, fb_cfg.evaluator.api_key or main_cfg.api_key)
+    eval_base = body.evaluator_api_base if body.evaluator_api_base is not None else (fb_cfg.evaluator.api_base or main_cfg.api_base)
+
+    if "/" in eval_model:
+        model_name = eval_model
+    elif eval_base:
+        model_name = f"openai/{eval_model}"
+    elif eval_provider == "openai":
+        model_name = eval_model
+    else:
+        model_name = f"{eval_provider}/{eval_model}"
+
+    kwargs: dict = {
+        "model": model_name,
+        "messages": [{"role": "user", "content": "Hi, reply with exactly: OK"}],
+        "max_tokens": 16,
+        "temperature": 0,
+        "api_key": eval_key or None,
+    }
+    if eval_base:
+        kwargs["api_base"] = eval_base
+
+    try:
+        resp = await litellm.acompletion(**kwargs)
+        content = resp.choices[0].message.content or ""
+        return TestResult(success=True, message="Feedback 模型连接成功", detail=f"响应: {content[:100]}")
+    except Exception as exc:
+        return TestResult(success=False, message="Feedback 模型连接失败", detail=str(exc)[:500])
+
+
+# ── User management ──
+
+class UserListResponse(BaseModel):
+    id: int
+    username: str
+    role: str
+    created_at: str
+
+    class Config:
+        from_attributes = True
+
+
+class UpdateRoleRequest(BaseModel):
+    role: str
+
+
+@router.get("/users", response_model=list[UserListResponse])
+async def list_users(user: User = Depends(require_admin)):
+    from sqlalchemy import select
+    from app.database import async_session
+    async with async_session() as db:
+        stmt = select(User).order_by(User.created_at.desc())
+        users = list((await db.execute(stmt)).scalars().all())
+        return [
+            UserListResponse(
+                id=u.id,
+                username=u.username,
+                role=u.role,
+                created_at=u.created_at.isoformat() if u.created_at else "",
+            )
+            for u in users
+        ]
+
+
+@router.put("/users/{user_id}/role")
+async def update_user_role(
+    user_id: int,
+    body: UpdateRoleRequest,
+    user: User = Depends(require_admin),
+):
+    if body.role not in ("admin", "user"):
+        from fastapi import HTTPException, status
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Role must be 'admin' or 'user'")
+    if user_id == user.id:
+        from fastapi import HTTPException, status
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Cannot change your own role")
+
+    from sqlalchemy import select
+    from app.database import async_session
+    async with async_session() as db:
+        target = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+        if not target:
+            from fastapi import HTTPException, status
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found")
+        target.role = body.role
+        await db.commit()
+        return {"id": target.id, "username": target.username, "role": target.role}
+
+
+@router.delete("/users/{user_id}", status_code=204)
+async def delete_user(
+    user_id: int,
+    user: User = Depends(require_admin),
+):
+    if user_id == user.id:
+        from fastapi import HTTPException, status
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Cannot delete yourself")
+
+    from sqlalchemy import select
+    from app.database import async_session
+    async with async_session() as db:
+        target = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+        if not target:
+            from fastapi import HTTPException, status
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found")
+        await db.delete(target)
+        await db.commit()

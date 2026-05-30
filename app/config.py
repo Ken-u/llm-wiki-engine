@@ -60,12 +60,32 @@ class SearchConfig(BaseModel):
     phrase_in_title_bonus: float = 50
 
 
+class FeedbackModelConfig(BaseModel):
+    """LLM config for a feedback pipeline agent. None = inherit from main llm."""
+    model: str | None = None
+    provider: str | None = None
+    api_key: str | None = None
+    api_base: str | None = None
+    temperature: float = 0.2
+    max_tokens: int = 4096
+    timeout: int = 120
+
+
+class FeedbackConfig(BaseModel):
+    enabled: bool = True
+    evaluator: FeedbackModelConfig = Field(default_factory=FeedbackModelConfig)
+    compiler: FeedbackModelConfig = Field(default_factory=FeedbackModelConfig)
+    max_revisions: int = 5
+    dedup_window_minutes: int = 60
+
+
 class AppConfig(BaseModel):
     server: ServerConfig = Field(default_factory=ServerConfig)
     auth: AuthConfig = Field(default_factory=AuthConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     search: SearchConfig = Field(default_factory=SearchConfig)
+    feedback: FeedbackConfig = Field(default_factory=FeedbackConfig)
 
 
 class Settings(BaseSettings):
@@ -185,11 +205,21 @@ def load_db_overrides() -> None:
         sub = getattr(cfg, section, None)
         if sub is None:
             continue
-        for k, v in values.items():
-            if hasattr(sub, k) and v is not None:
-                setattr(sub, k, v)
+        _apply_overrides(sub, values)
 
     logger.info("Loaded admin settings from DB for sections: %s", [r[0] for r in rows])
+
+
+def _apply_overrides(target: Any, values: dict) -> None:
+    """Recursively apply override values to a Pydantic model instance."""
+    for k, v in values.items():
+        if not hasattr(target, k) or v is None:
+            continue
+        current = getattr(target, k)
+        if isinstance(v, dict) and hasattr(current, "__fields__"):
+            _apply_overrides(current, v)
+        else:
+            setattr(target, k, v)
 
 
 async def save_db_settings(section: str, values: dict[str, Any]) -> None:

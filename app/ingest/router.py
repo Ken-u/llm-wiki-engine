@@ -112,6 +112,23 @@ async def ingest_status(
     return list((await db.execute(stmt)).scalars().all())
 
 
+@router.delete("/{job_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_ingest_job(
+    project_id: str,
+    job_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await check_membership(db, project_id, user, require="owner")
+    job = (await db.execute(select(IngestJob).where(IngestJob.id == job_id))).scalar_one_or_none()
+    if not job or job.project_id != project_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Job not found")
+    if job.status in ("pending", "processing"):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Cannot delete a running job")
+    await db.delete(job)
+    await db.commit()
+
+
 @router.get("/history", response_model=list[IngestJobResponse])
 async def ingest_history(
     project_id: str,

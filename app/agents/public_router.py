@@ -132,7 +132,15 @@ async def public_agent_chat(
         ):
             yield f"data: {event}\n\n"
 
-    return StreamingResponse(sse_stream(), media_type="text/event-stream")
+    from app.feedback.trigger import wrap_agent_sse
+    wrapped = wrap_agent_sse(
+        sse_stream(),
+        project_id=projects[0].id if projects else "",
+        agent_id=agent.id,
+        conversation_id=body.conversation_id,
+        user_message=body.message,
+    )
+    return StreamingResponse(wrapped, media_type="text/event-stream")
 
 
 @router.get("/{agent_id}/wiki")

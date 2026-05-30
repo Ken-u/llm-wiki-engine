@@ -33,6 +33,7 @@ class ProjectResponse(BaseModel):
     created_at: datetime
     ticket_project_id: str | None = None
     ticket_project_name: str | None = None
+    feedback_enabled: bool = True
 
     class Config:
         from_attributes = True
@@ -42,6 +43,7 @@ class UpdateProjectRequest(BaseModel):
     name: str | None = None
     description: str | None = None
     ticket_project_id: str | None = None
+    feedback_enabled: bool | None = None
 
 
 class AddMemberRequest(BaseModel):
@@ -74,6 +76,7 @@ async def _build_project_response(db: AsyncSession, proj: Project) -> ProjectRes
         created_at=proj.created_at,
         ticket_project_id=proj.ticket_project_id,
         ticket_project_name=ticket_name,
+        feedback_enabled=proj.feedback_enabled,
     )
 
 
@@ -126,6 +129,8 @@ async def update_project(
         if body.ticket_project_id is not None:
             await service.check_membership(db, body.ticket_project_id, user)
         kwargs["ticket_project_id"] = body.ticket_project_id
+    if "feedback_enabled" in body.model_fields_set:
+        kwargs["feedback_enabled"] = body.feedback_enabled
 
     proj = await service.update_project(db, proj, **kwargs)
     return await _build_project_response(db, proj)

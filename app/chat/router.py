@@ -160,6 +160,25 @@ async def list_conversations(
     ]
 
 
+@router.delete("/conversations/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_conversation(
+    project_id: str,
+    conversation_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await check_membership(db, project_id, user, require="owner")
+    project = await get_project_or_404(db, project_id)
+
+    msg_file = _conv_dir(project.disk_path) / f"{conversation_id}.json"
+    if msg_file.exists():
+        msg_file.unlink()
+
+    convs = await _load_conversations(project.disk_path)
+    convs = [c for c in convs if c["id"] != conversation_id]
+    await _save_conversations(project.disk_path, convs)
+
+
 @router.get("/conversations/{conversation_id}")
 async def get_conversation(
     project_id: str,

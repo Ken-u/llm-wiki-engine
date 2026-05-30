@@ -10,9 +10,19 @@ from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from dataclasses import dataclass
+
 from app.auth.models import User
 from app.config import get_config
 from app.projects.models import Project, ProjectMember
+
+
+@dataclass
+class _AdminMember:
+    """Lightweight stand-in for ProjectMember when admin bypasses membership."""
+    project_id: str
+    user_id: int
+    role: str
 
 _WIKI_DIRS = [
     "wiki/entities",
@@ -71,12 +81,15 @@ async def create_project(
 
 
 async def list_user_projects(db: AsyncSession, user: User) -> list[Project]:
-    stmt = (
-        select(Project)
-        .join(ProjectMember, Project.id == ProjectMember.project_id)
-        .where(ProjectMember.user_id == user.id)
-        .order_by(Project.created_at.desc())
-    )
+    if user.role == "admin":
+        stmt = select(Project).order_by(Project.created_at.desc())
+    else:
+        stmt = (
+            select(Project)
+            .join(ProjectMember, Project.id == ProjectMember.project_id)
+            .where(ProjectMember.user_id == user.id)
+            .order_by(Project.created_at.desc())
+        )
     return list((await db.execute(stmt)).scalars().all())
 
 
@@ -87,7 +100,10 @@ async def get_project_or_404(db: AsyncSession, project_id: str) -> Project:
     return proj
 
 
-async def check_membership(db: AsyncSession, project_id: str, user: User, *, require: str | None = None) -> ProjectMember:
+async def check_membership(db: AsyncSession, project_id: str, user: User, *, require: str | None = None) -> ProjectMember | _AdminMember:
+    if user.role == "admin":
+        return _AdminMember(project_id=project_id, user_id=user.id, role="owner")
+
     stmt = select(ProjectMember).where(
         ProjectMember.project_id == project_id,
         ProjectMember.user_id == user.id,
@@ -127,12 +143,15 @@ async def update_project(
     name: str | None = None,
     description: str | None = None,
     ticket_project_id: str | None = ...,
+    feedback_enabled: bool | None = None,
 ) -> Project:
     """Update project fields. Pass ticket_project_id=None to clear binding."""
     if name is not None:
         project.name = name
     if description is not None:
         project.description = description
+    if feedback_enabled is not None:
+        project.feedback_enabled = feedback_enabled
 
     if ticket_project_id is not ...:
         if ticket_project_id is not None:

@@ -50,6 +50,7 @@ from app.chat.router import router as chat_router  # noqa: E402
 from app.agents.router import router as agents_router  # noqa: E402
 from app.agents.public_router import router as public_agents_router  # noqa: E402
 from app.admin.router import router as admin_router  # noqa: E402
+from app.feedback.router import router as feedback_router  # noqa: E402
 
 app.include_router(auth_router)
 app.include_router(projects_router)
@@ -61,6 +62,7 @@ app.include_router(chat_router)
 app.include_router(agents_router)
 app.include_router(public_agents_router)
 app.include_router(admin_router)
+app.include_router(feedback_router)
 
 
 @app.get("/health")

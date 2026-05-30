@@ -76,7 +76,7 @@ async def _get_agent_or_404(db: AsyncSession, agent_id: str, user: User) -> Agen
     agent = (await db.execute(select(Agent).where(Agent.id == agent_id))).scalar_one_or_none()
     if not agent:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Agent not found")
-    if agent.created_by != user.id:
+    if agent.created_by != user.id and user.role != "admin":
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Not the agent owner")
     return agent
 
@@ -129,7 +129,10 @@ async def list_agents(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    stmt = select(Agent).where(Agent.created_by == user.id).order_by(Agent.created_at.desc())
+    if user.role == "admin":
+        stmt = select(Agent).order_by(Agent.created_at.desc())
+    else:
+        stmt = select(Agent).where(Agent.created_by == user.id).order_by(Agent.created_at.desc())
     agents = list((await db.execute(stmt)).scalars().all())
     result = []
     for a in agents:
@@ -222,4 +225,12 @@ async def agent_chat(
         ):
             yield f"data: {event}\n\n"
 
-    return StreamingResponse(sse_stream(), media_type="text/event-stream")
+    from app.feedback.trigger import wrap_agent_sse
+    wrapped = wrap_agent_sse(
+        sse_stream(),
+        project_id=projects[0].id if projects else "",
+        agent_id=agent.id,
+        conversation_id=body.conversation_id,
+        user_message=body.message,
+    )
+    return StreamingResponse(wrapped, media_type="text/event-stream")
