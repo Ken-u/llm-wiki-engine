@@ -26,14 +26,6 @@ SUBMIT_EVALUATION_TOOL = {
                     "type": "boolean",
                     "description": "是否需要修复。",
                 },
-                "target_page_path": {
-                    "type": "string",
-                    "description": "建议修复的目标 wiki 页面路径（如不适用则留空字符串）。",
-                },
-                "page_exists": {
-                    "type": "boolean",
-                    "description": "该页面当前是否已存在于 wiki 中。",
-                },
                 "confidence": {
                     "type": "string",
                     "enum": ["high", "medium", "low"],
@@ -42,16 +34,6 @@ SUBMIT_EVALUATION_TOOL = {
                 "reason": {
                     "type": "string",
                     "description": "一句话判定原因。",
-                },
-                "missing_info": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "wiki 中缺失或过时的信息列表。",
-                },
-                "suggested_sections": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "建议新增或修改的章节名称。",
                 },
             },
             "required": ["needs_repair", "confidence", "reason"],
@@ -84,12 +66,8 @@ class EvaluatorInput:
 @dataclass
 class EvaluatorOutput:
     needs_repair: bool
-    target_page_path: str
-    page_exists: bool
     confidence: str
     reason: str
-    missing_info: list[str]
-    suggested_sections: list[str]
     raw: dict
 
 
@@ -117,12 +95,8 @@ def _parse_tool_call(tc: ToolCallResult) -> EvaluatorOutput:
     args = tc.arguments
     return EvaluatorOutput(
         needs_repair=args.get("needs_repair", False),
-        target_page_path=args.get("target_page_path", ""),
-        page_exists=args.get("page_exists", True),
         confidence=args.get("confidence", "low"),
         reason=args.get("reason", ""),
-        missing_info=args.get("missing_info", []),
-        suggested_sections=args.get("suggested_sections", []),
         raw=args,
     )
 
@@ -154,11 +128,7 @@ async def run_evaluator(
     logger.warning("Evaluator exhausted retries, defaulting to no-repair")
     return EvaluatorOutput(
         needs_repair=False,
-        target_page_path="",
-        page_exists=True,
         confidence="low",
         reason="evaluator did not produce structured output",
-        missing_info=[],
-        suggested_sections=[],
         raw={},
     )

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import asdict
+import os
 
 from app.config import get_config
 from app.database import async_session
@@ -139,19 +139,18 @@ async def _run_repair(task_id: str) -> None:
 
         evaluator_result = json.loads(task.evaluator_result_json or "{}")
 
-        existing_content: str | None = None
-        if task.target_page_path:
-            existing_content = await _fetch_wiki_page(task.project_id, task.target_page_path)
+        wiki_dir = await _get_wiki_dir(task.project_id)
+        if not wiki_dir:
+            await service.mark_compile_failed(db, task, "project wiki dir not found")
+            return
 
         inp = CompilerInput(
             user_message=task.user_message,
             assistant_answer=task.assistant_answer,
             evaluator_result=evaluator_result,
-            target_page_path=task.target_page_path or "",
-            existing_page_content=existing_content,
             review_guidance=task.review_guidance,
-            wiki_reads=json.loads(task.wiki_reads_json),
             raw_reads=json.loads(task.raw_reads_json),
+            wiki_dir=wiki_dir,
         )
 
         try:
@@ -161,13 +160,46 @@ async def _run_repair(task_id: str) -> None:
             await service.mark_compile_failed(db, task, "compiler exception")
             return
 
-        await service.set_repair_candidate(db, task, asdict(result))
-        logger.info("Task %s: repair candidate ready for review", task_id)
+        candidate = {
+            "changes": [
+                {
+                    "path": c.path,
+                    "action": c.action,
+                    "old_content": c.old_content,
+                    "new_content": c.new_content,
+                }
+                for c in result.changes
+            ],
+            "change_summary": result.change_summary,
+            "confidence": result.confidence,
+        }
+        await service.set_repair_candidate(db, task, candidate)
+        logger.info(
+            "Task %s: repair candidate ready (%d file(s) changed)",
+            task_id, len(result.changes),
+        )
 
 
 async def trigger_recompile(task_id: str) -> None:
     """Re-run the compiler after a revision request."""
     await _run_repair(task_id)
+
+
+async def _get_wiki_dir(project_id: str) -> str | None:
+    """Get the wiki directory path for a project."""
+    try:
+        from app.projects.models import Project
+        from sqlalchemy import select
+
+        async with async_session() as db:
+            proj = (await db.execute(
+                select(Project).where(Project.id == project_id)
+            )).scalar_one_or_none()
+            if proj:
+                return os.path.join(proj.disk_path, "wiki")
+    except Exception:
+        logger.debug("Could not resolve wiki dir for project %s", project_id)
+    return None
 
 
 async def _fetch_wiki_page(project_id: str, page_path: str) -> str | None:

@@ -116,8 +116,6 @@ async def set_evaluator_result(
     evaluator_output: dict,
 ) -> None:
     task.evaluator_result_json = json.dumps(evaluator_output, ensure_ascii=False)
-    task.target_page_path = evaluator_output.get("target_page_path")
-    task.page_exists = evaluator_output.get("page_exists", True)
     task.evaluator_confidence = evaluator_output.get("confidence", "low")
 
     if not needs_repair:

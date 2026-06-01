@@ -48,34 +48,28 @@ class TestBuildEvaluatorPrompt:
 class TestParseToolCall:
     def test_full_args(self):
         tc = ToolCallResult(
+            id="tc_1",
             name="submit_evaluation",
             arguments={
                 "needs_repair": True,
-                "target_page_path": "wiki/test.md",
-                "page_exists": True,
                 "confidence": "high",
                 "reason": "测试原因",
-                "missing_info": ["info1"],
-                "suggested_sections": ["sec1"],
             },
         )
         result = _parse_tool_call(tc)
         assert result.needs_repair is True
-        assert result.target_page_path == "wiki/test.md"
         assert result.confidence == "high"
         assert result.reason == "测试原因"
-        assert result.missing_info == ["info1"]
-        assert result.suggested_sections == ["sec1"]
 
     def test_minimal_args(self):
         tc = ToolCallResult(
+            id="tc_2",
             name="submit_evaluation",
             arguments={"needs_repair": False, "confidence": "low", "reason": "ok"},
         )
         result = _parse_tool_call(tc)
         assert result.needs_repair is False
-        assert result.target_page_path == ""
-        assert result.missing_info == []
+        assert result.confidence == "low"
 
 
 class TestExtractReads:

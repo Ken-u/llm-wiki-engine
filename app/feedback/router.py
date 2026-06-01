@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -200,16 +201,26 @@ async def apply_feedback_task(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Task must be approved before applying")
 
     candidate = _safe_json(task.repair_candidate_json)
-    if not candidate or not candidate.get("proposed_content"):
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "No repair candidate content")
+    if not candidate:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "No repair candidate")
+
+    changes = candidate.get("changes")
+    if not changes and candidate.get("proposed_content"):
+        changes = [{
+            "path": task.target_page_path,
+            "action": "modify",
+            "new_content": candidate["proposed_content"],
+        }]
+    if not changes:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "No file changes in repair candidate")
 
     try:
-        await _apply_wiki_repair(db, task, candidate["proposed_content"])
+        await _apply_wiki_changes(db, task.project_id, changes, task.id)
         await service.mark_applied(db, task)
     except Exception as e:
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, f"Failed to apply: {e}")
 
-    return {"status": "applied"}
+    return {"status": "applied", "files_changed": len(changes)}
 
 
 async def _read_existing_page(db: AsyncSession, task) -> str | None:
@@ -244,28 +255,80 @@ def _safe_json(raw: str | None) -> dict | None:
         return None
 
 
-async def _apply_wiki_repair(
+async def _apply_wiki_changes(
     db: AsyncSession,
-    task,
-    content: str,
+    project_id: str,
+    changes: list[dict],
+    task_id: str,
 ) -> None:
-    """Write the repair content to the wiki page file."""
+    """Apply multi-file changes to wiki with git safety."""
     import os
+    import subprocess
     from sqlalchemy import select
     from app.projects.models import Project
 
     proj = (await db.execute(
-        select(Project).where(Project.id == task.project_id)
+        select(Project).where(Project.id == project_id)
     )).scalar_one_or_none()
     if not proj:
         raise ValueError("Project not found")
 
-    page_path = task.target_page_path
-    if not page_path:
-        raise ValueError("No target page path")
+    disk_path = proj.disk_path
+    _ensure_git(disk_path)
+    _git_commit_snapshot(disk_path, f"pre-feedback-apply: task {task_id[:8]}")
 
-    full_path = os.path.join(proj.disk_path, "wiki", page_path)
-    os.makedirs(os.path.dirname(full_path), exist_ok=True)
+    wiki_dir = os.path.join(disk_path, "wiki")
+    try:
+        for ch in changes:
+            path = ch.get("path")
+            if not path:
+                continue
+            full_path = os.path.join(wiki_dir, os.path.normpath(path))
+            if os.path.normpath(path).startswith(".."):
+                raise ValueError(f"Path traversal not allowed: {path}")
 
-    with open(full_path, "w", encoding="utf-8") as f:
-        f.write(content)
+            action = ch.get("action", "modify")
+            content = ch.get("new_content", "")
+
+            if action in ("modify", "create"):
+                os.makedirs(os.path.dirname(full_path), exist_ok=True)
+                with open(full_path, "w", encoding="utf-8") as f:
+                    f.write(content)
+
+        _git_commit_snapshot(disk_path, f"feedback-apply: task {task_id[:8]}")
+    except Exception:
+        _git_rollback(disk_path)
+        raise
+
+
+def _ensure_git(path: str) -> None:
+    """Initialize git repo if not already present."""
+    import subprocess
+    git_dir = os.path.join(path, ".git")
+    if not os.path.isdir(git_dir):
+        subprocess.run(["git", "init"], cwd=path, capture_output=True, check=True)
+        subprocess.run(
+            ["git", "config", "user.email", "feedback@llm-wiki"],
+            cwd=path, capture_output=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "LLM-Wiki Feedback"],
+            cwd=path, capture_output=True,
+        )
+
+
+def _git_commit_snapshot(path: str, message: str) -> None:
+    """Stage all and commit. Silently succeeds if nothing to commit."""
+    import subprocess
+    subprocess.run(["git", "add", "-A"], cwd=path, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", message, "--allow-empty-message"],
+        cwd=path, capture_output=True,
+    )
+
+
+def _git_rollback(path: str) -> None:
+    """Reset to the last commit (undo uncommitted changes)."""
+    import subprocess
+    subprocess.run(["git", "checkout", "--", "."], cwd=path, capture_output=True)
+    subprocess.run(["git", "clean", "-fd"], cwd=path, capture_output=True)

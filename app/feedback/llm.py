@@ -22,6 +22,7 @@ litellm.drop_params = True
 @dataclass
 class ToolCallResult:
     """A single tool call extracted from the LLM response."""
+    id: str
     name: str
     arguments: dict
 
@@ -98,6 +99,7 @@ async def complete_with_tools(
             except (json.JSONDecodeError, TypeError):
                 args = {}
             tool_calls.append(ToolCallResult(
+                id=tc.id or "",
                 name=tc.function.name,
                 arguments=args,
             ))
