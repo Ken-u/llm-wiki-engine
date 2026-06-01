@@ -7,6 +7,7 @@ wiki response has quality issues that warrant a repair.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 
 from app.config import FeedbackModelConfig
@@ -91,13 +92,35 @@ def _fmt(obj: list | dict) -> str:
     return json.dumps(obj, ensure_ascii=False, indent=2)[:8000]
 
 
+def _clean_tool_string(value: object) -> str:
+    """Remove provider/tool-call markup fragments that sometimes leak into args."""
+    if not isinstance(value, str):
+        return ""
+    cleaned = re.sub(r"\s*</parameter\b[^>\n]*(?:>|$).*$", "", value, flags=re.IGNORECASE | re.DOTALL)
+    cleaned = re.sub(r"\s*</?[a-zA-Z_][\w:-]*\b[^>]*>\s*$", "", cleaned, flags=re.IGNORECASE)
+    return cleaned.strip()
+
+
+def _normalize_confidence(value: object) -> str:
+    cleaned = _clean_tool_string(value).lower()
+    for allowed in ("high", "medium", "low"):
+        if cleaned == allowed or cleaned.startswith(f"{allowed}\n") or cleaned.startswith(f"{allowed} "):
+            return allowed
+    return "low"
+
+
 def _parse_tool_call(tc: ToolCallResult) -> EvaluatorOutput:
     args = tc.arguments
+    normalized = {
+        "needs_repair": bool(args.get("needs_repair", False)),
+        "confidence": _normalize_confidence(args.get("confidence", "low")),
+        "reason": _clean_tool_string(args.get("reason", "")),
+    }
     return EvaluatorOutput(
-        needs_repair=args.get("needs_repair", False),
-        confidence=args.get("confidence", "low"),
-        reason=args.get("reason", ""),
-        raw=args,
+        needs_repair=normalized["needs_repair"],
+        confidence=normalized["confidence"],
+        reason=normalized["reason"],
+        raw=normalized,
     )
 
 

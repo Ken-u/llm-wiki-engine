@@ -71,6 +71,39 @@ class TestParseToolCall:
         assert result.needs_repair is False
         assert result.confidence == "low"
 
+    def test_strips_parameter_artifacts_from_args(self):
+        tc = ToolCallResult(
+            id="tc_3",
+            name="submit_evaluation",
+            arguments={
+                "needs_repair": False,
+                "confidence": "high\n</parameter",
+                "reason": "wiki 内容充分。\n</parameter",
+            },
+        )
+        result = _parse_tool_call(tc)
+        assert result.needs_repair is False
+        assert result.confidence == "high"
+        assert result.reason == "wiki 内容充分。"
+        assert result.raw == {
+            "needs_repair": False,
+            "confidence": "high",
+            "reason": "wiki 内容充分。",
+        }
+
+    def test_invalid_confidence_defaults_to_low(self):
+        tc = ToolCallResult(
+            id="tc_4",
+            name="submit_evaluation",
+            arguments={
+                "needs_repair": True,
+                "confidence": "certain",
+                "reason": "bad",
+            },
+        )
+        result = _parse_tool_call(tc)
+        assert result.confidence == "low"
+
 
 class TestExtractReads:
     def test_splits_wiki_and_raw(self):
