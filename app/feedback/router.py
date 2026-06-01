@@ -15,7 +15,7 @@ from app.auth.deps import get_current_user
 from app.auth.models import User
 from app.database import get_db
 from app.feedback import service
-from app.feedback.queue import trigger_recompile
+from app.feedback.queue import trigger_recompile, trigger_reevaluate
 
 router = APIRouter(prefix="/api/projects/{project_id}/feedback", tags=["feedback"])
 
@@ -157,6 +157,41 @@ async def delete_feedback_task(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Feedback task not found")
     await service.delete_task(db, task)
     return {"status": "deleted"}
+
+
+@router.post("/{task_id}/reevaluate")
+async def reevaluate_feedback_task(
+    project_id: str,
+    task_id: str,
+    _user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Re-run the evaluator from scratch."""
+    task = await service.get_task(db, task_id)
+    if not task or task.project_id != project_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Feedback task not found")
+
+    reevaluable = {
+        "evaluation_done", "pending_review", "pending_recompile",
+        "compile_failed", "rejected",
+    }
+    if task.status not in reevaluable:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"Cannot reevaluate from status '{task.status}'. Allowed: {reevaluable}",
+        )
+
+    service.transition_status(task, "pending_evaluation")
+    task.evaluator_result_json = None
+    task.evaluator_confidence = None
+    task.repair_candidate_json = None
+    task.reject_reason = None
+    task.review_guidance = None
+    task.error = None
+    await db.commit()
+
+    asyncio.create_task(trigger_reevaluate(task.id))
+    return {"status": "pending_evaluation"}
 
 
 @router.post("/{task_id}/recompile")

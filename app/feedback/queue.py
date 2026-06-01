@@ -185,6 +185,11 @@ async def trigger_recompile(task_id: str) -> None:
     await _run_repair(task_id)
 
 
+async def trigger_reevaluate(task_id: str) -> None:
+    """Re-run the evaluator (and possibly compiler) from scratch."""
+    await _run_evaluation(task_id)
+
+
 async def _get_wiki_dir(project_id: str) -> str | None:
     """Get the wiki directory path for a project."""
     try:

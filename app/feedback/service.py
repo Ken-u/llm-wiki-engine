@@ -99,12 +99,12 @@ def transition_status(task: FeedbackTask, new_status: str) -> None:
 
 _TRANSITIONS: dict[str, set[str]] = {
     "pending_evaluation": {"evaluation_done", "rejected", "compile_failed"},
-    "evaluation_done": {"pending_review", "pending_recompile"},
-    "pending_review": {"approved", "rejected", "pending_recompile"},
-    "pending_recompile": {"pending_review", "compile_failed"},
+    "evaluation_done": {"pending_evaluation", "pending_review", "pending_recompile"},
+    "pending_review": {"pending_evaluation", "approved", "rejected", "pending_recompile"},
+    "pending_recompile": {"pending_evaluation", "pending_review", "compile_failed"},
     "approved": {"applied"},
-    "rejected": {"pending_recompile"},
-    "compile_failed": {"pending_recompile", "rejected"},
+    "rejected": {"pending_evaluation", "pending_recompile"},
+    "compile_failed": {"pending_evaluation", "pending_recompile", "rejected"},
 }
 
 

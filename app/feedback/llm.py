@@ -67,6 +67,27 @@ def _build_kwargs(cfg: FeedbackModelConfig) -> dict:
     return kwargs
 
 
+class SchemaValidationError(RuntimeError):
+    """Raised when a tool schema is corrupted before sending to the provider."""
+
+
+def _validate_tools_schema(tools: list[dict]) -> None:
+    """Ensure every tool has a non-empty parameters schema.
+
+    Catches the bug where LiteLLM/provider adapters strip out the
+    parameters object, leaving ``{}``.
+    """
+    for tool in tools:
+        fn = tool.get("function", {})
+        params = fn.get("parameters", {})
+        props = params.get("properties")
+        if not props:
+            raise SchemaValidationError(
+                f"Tool '{fn.get('name', '?')}' has empty parameters schema. "
+                f"Full tool dict: {json.dumps(tool, ensure_ascii=False)}"
+            )
+
+
 async def complete_with_tools(
     messages: list[dict],
     tools: list[dict],
@@ -82,10 +103,26 @@ async def complete_with_tools(
     ``tool_choice`` can be "auto", "required", or a specific function
     selector like ``{"type": "function", "function": {"name": "xxx"}}``.
     """
+    _validate_tools_schema(tools)
+
     kwargs = _build_kwargs(cfg)
     kwargs["tools"] = tools
     if tool_choice is not None:
         kwargs["tool_choice"] = tool_choice
+
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(
+            "Feedback LLM request: model=%s, tool_choice=%s, tools_schema=%s",
+            kwargs.get("model"),
+            tool_choice,
+            json.dumps(
+                [{
+                    "name": t["function"]["name"],
+                    "parameters": t["function"].get("parameters", {}),
+                } for t in tools],
+                ensure_ascii=False,
+            ),
+        )
 
     resp = await litellm.acompletion(messages=messages, **kwargs)
     choice = resp.choices[0]
@@ -103,6 +140,13 @@ async def complete_with_tools(
                 name=tc.function.name,
                 arguments=args,
             ))
+
+    logger.info(
+        "Feedback LLM response: finish_reason=%s, tool_calls=%d, has_content=%s",
+        choice.finish_reason,
+        len(tool_calls),
+        bool(msg.content),
+    )
 
     return FeedbackLLMResponse(
         content=msg.content,
