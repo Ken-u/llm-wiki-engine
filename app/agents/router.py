@@ -11,10 +11,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import StreamingResponse
 
+from app.agents import conversations
 from app.agents.models import Agent, AgentProject
 from app.agents import service
 from app.auth.deps import get_current_user
 from app.auth.models import User
+from app.config import get_config
 from app.database import get_db
 
 router = APIRouter(prefix="/api/agents", tags=["agents"])
@@ -70,6 +72,14 @@ class CreateAgentResponse(BaseModel):
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1)
     conversation_id: str | None = None
+
+
+class ConversationResponse(BaseModel):
+    id: str
+    title: str
+    created_at: str
+    updated_at: str | None = None
+    message_count: int
 
 
 async def _get_agent_or_404(db: AsyncSession, agent_id: str, user: User) -> Agent:
@@ -164,6 +174,54 @@ async def get_agent(
     )
 
 
+@router.get("/{agent_id}/conversations", response_model=list[ConversationResponse])
+async def list_agent_conversations(
+    agent_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await _get_agent_or_404(db, agent_id, user)
+    base_dir = get_config().server.projects_dir
+    return conversations.list_conversations(base_dir, agent_id=agent_id, user_id=user.id)
+
+
+@router.get("/{agent_id}/conversations/{conversation_id}")
+async def get_agent_conversation(
+    agent_id: str,
+    conversation_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await _get_agent_or_404(db, agent_id, user)
+    base_dir = get_config().server.projects_dir
+    conv = conversations.get_conversation(
+        base_dir,
+        agent_id=agent_id,
+        user_id=user.id,
+        conversation_id=conversation_id,
+    )
+    if conv is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Conversation not found")
+    return conv
+
+
+@router.delete("/{agent_id}/conversations/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_agent_conversation(
+    agent_id: str,
+    conversation_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await _get_agent_or_404(db, agent_id, user)
+    base_dir = get_config().server.projects_dir
+    conversations.delete_conversation(
+        base_dir,
+        agent_id=agent_id,
+        user_id=user.id,
+        conversation_id=conversation_id,
+    )
+
+
 @router.put("/{agent_id}", response_model=AgentResponse)
 async def update_agent(
     agent_id: str,
@@ -217,13 +275,45 @@ async def agent_chat(
     if not projects:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Agent has no projects")
 
+    conv_id = body.conversation_id
+    history = []
+    if conv_id:
+        stored = conversations.get_conversation(
+            get_config().server.projects_dir,
+            agent_id=agent.id,
+            user_id=user.id,
+            conversation_id=conv_id,
+        )
+        if stored:
+            history = [
+                {"role": m["role"], "content": m["content"]}
+                for m in stored["messages"]
+                if m.get("role") in ("user", "assistant")
+            ]
+
     async def sse_stream():
+        collected_tokens: list[str] = []
+        persisted_id: str | None = conv_id
         async for event in service.agent_toolcall_chat(
-            db, projects, body.message, [], agent.system_prompt,
+            db, projects, body.message, history, agent.system_prompt,
             max_tool_calls=agent.max_tool_calls,
             debug_result_limit=agent.debug_result_limit,
         ):
-            yield f"data: {event}\n\n"
+            payload = json.loads(event)
+            if "token" in payload:
+                collected_tokens.append(payload["token"])
+            if payload.get("done"):
+                conv = conversations.append_turn(
+                    get_config().server.projects_dir,
+                    agent_id=agent.id,
+                    user_id=user.id,
+                    conversation_id=persisted_id,
+                    user_message=body.message,
+                    assistant_answer="".join(collected_tokens),
+                )
+                persisted_id = conv["id"]
+                payload["conversation_id"] = persisted_id
+            yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
     from app.feedback.trigger import wrap_agent_sse
     wrapped = wrap_agent_sse(

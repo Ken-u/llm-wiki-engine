@@ -10,10 +10,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import StreamingResponse
 
+from app.agents import conversations
 from app.agents.models import Agent
 from app.agents import service
 from app.auth.deps import verify_password, create_access_token
 from app.auth.models import User
+from app.config import get_config
 from app.database import get_db
 
 router = APIRouter(prefix="/api/public/agents", tags=["public-agents"])
@@ -35,6 +37,14 @@ class PublicAgentInfo(BaseModel):
 class PublicAuthRequest(BaseModel):
     username: str
     password: str
+
+
+class PublicConversationResponse(BaseModel):
+    id: str
+    title: str
+    created_at: str
+    updated_at: str | None = None
+    message_count: int
 
 
 @router.get("/{agent_id}/info")
@@ -111,6 +121,91 @@ async def _verify_public_agent_access(
     return agent
 
 
+async def _verify_public_agent_access_with_user(
+    db: AsyncSession,
+    agent_id: str,
+    authorization: str | None,
+) -> tuple[Agent, int | None]:
+    """Verify public access and return user_id when auth is a JWT login token."""
+    agent = (await db.execute(select(Agent).where(Agent.id == agent_id))).scalar_one_or_none()
+    if not agent:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Agent not found")
+    if not agent.is_public:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Agent is not public")
+
+    if not agent.require_api_key:
+        return agent, None
+
+    if not authorization:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "API key required")
+
+    raw_key = authorization.replace("Bearer ", "").strip()
+    from app.auth.deps import _decode_token
+    try:
+        user_id = _decode_token(raw_key)
+        user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+        if user is not None:
+            return agent, user.id
+    except HTTPException:
+        pass
+
+    if await service.verify_api_key(db, agent, raw_key):
+        return agent, None
+
+    raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid API key or token")
+
+
+@router.get("/{agent_id}/conversations", response_model=list[PublicConversationResponse])
+async def list_public_agent_conversations(
+    agent_id: str,
+    db: AsyncSession = Depends(get_db),
+    authorization: str | None = Header(None),
+):
+    _, user_id = await _verify_public_agent_access_with_user(db, agent_id, authorization)
+    if user_id is None:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Login token required for persistent conversations")
+    return conversations.list_conversations(get_config().server.projects_dir, agent_id=agent_id, user_id=user_id)
+
+
+@router.get("/{agent_id}/conversations/{conversation_id}")
+async def get_public_agent_conversation(
+    agent_id: str,
+    conversation_id: str,
+    db: AsyncSession = Depends(get_db),
+    authorization: str | None = Header(None),
+):
+    _, user_id = await _verify_public_agent_access_with_user(db, agent_id, authorization)
+    if user_id is None:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Login token required for persistent conversations")
+    conv = conversations.get_conversation(
+        get_config().server.projects_dir,
+        agent_id=agent_id,
+        user_id=user_id,
+        conversation_id=conversation_id,
+    )
+    if conv is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Conversation not found")
+    return conv
+
+
+@router.delete("/{agent_id}/conversations/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_public_agent_conversation(
+    agent_id: str,
+    conversation_id: str,
+    db: AsyncSession = Depends(get_db),
+    authorization: str | None = Header(None),
+):
+    _, user_id = await _verify_public_agent_access_with_user(db, agent_id, authorization)
+    if user_id is None:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Login token required for persistent conversations")
+    conversations.delete_conversation(
+        get_config().server.projects_dir,
+        agent_id=agent_id,
+        user_id=user_id,
+        conversation_id=conversation_id,
+    )
+
+
 @router.post("/{agent_id}/chat")
 async def public_agent_chat(
     agent_id: str,
@@ -118,19 +213,51 @@ async def public_agent_chat(
     db: AsyncSession = Depends(get_db),
     authorization: str | None = Header(None),
 ):
-    agent = await _verify_public_agent_access(db, agent_id, authorization)
+    agent, user_id = await _verify_public_agent_access_with_user(db, agent_id, authorization)
 
     projects = await service.get_agent_projects(db, agent.id)
     if not projects:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Agent has no knowledge bases")
 
+    conv_id = body.conversation_id
+    history = []
+    if user_id is not None and conv_id:
+        stored = conversations.get_conversation(
+            get_config().server.projects_dir,
+            agent_id=agent.id,
+            user_id=user_id,
+            conversation_id=conv_id,
+        )
+        if stored:
+            history = [
+                {"role": m["role"], "content": m["content"]}
+                for m in stored["messages"]
+                if m.get("role") in ("user", "assistant")
+            ]
+
     async def sse_stream():
+        collected_tokens: list[str] = []
+        persisted_id: str | None = conv_id
         async for event in service.agent_toolcall_chat(
-            db, projects, body.message, [], agent.system_prompt,
+            db, projects, body.message, history, agent.system_prompt,
             max_tool_calls=agent.max_tool_calls,
             debug_result_limit=agent.debug_result_limit,
         ):
-            yield f"data: {event}\n\n"
+            payload = json.loads(event)
+            if "token" in payload:
+                collected_tokens.append(payload["token"])
+            if payload.get("done") and user_id is not None:
+                conv = conversations.append_turn(
+                    get_config().server.projects_dir,
+                    agent_id=agent.id,
+                    user_id=user_id,
+                    conversation_id=persisted_id,
+                    user_message=body.message,
+                    assistant_answer="".join(collected_tokens),
+                )
+                persisted_id = conv["id"]
+                payload["conversation_id"] = persisted_id
+            yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
     from app.feedback.trigger import wrap_agent_sse
     wrapped = wrap_agent_sse(
