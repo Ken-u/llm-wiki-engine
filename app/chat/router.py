@@ -192,7 +192,7 @@ async def delete_conversation(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    await check_membership(db, project_id, user, require="owner")
+    await check_membership(db, project_id, user)
     project = await get_project_or_404(db, project_id)
 
     msg_file = _conv_dir(project.disk_path) / f"{conversation_id}.json"
