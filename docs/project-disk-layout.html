@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Project Disk Layout</title>
+  <style>
+    :root { --bg:#f6f1e8; --panel:#fffaf2; --text:#2f2418; --muted:#6c5a46; --line:#e2d2bc; --accent:#d46b08; --shadow:0 18px 40px rgba(92,62,29,.08); }
+    *{box-sizing:border-box} body{margin:0;font-family:"Noto Serif SC","Source Han Serif SC","Songti SC",serif;background:linear-gradient(180deg,#fbf7f0 0%,var(--bg) 100%);color:var(--text);line-height:1.72}
+    .page{width:min(1120px,calc(100vw - 32px));margin:32px auto 56px}.hero,.section{background:var(--panel);border:1px solid var(--line);border-radius:24px;box-shadow:var(--shadow);padding:28px 30px;margin-top:22px}
+    .eyebrow{display:inline-block;padding:6px 12px;border-radius:999px;background:#fff1df;color:var(--accent);font-size:13px;font-weight:700;letter-spacing:.04em;margin-bottom:14px}
+    h1,h2{margin:0 0 14px;line-height:1.25} h1{font-size:clamp(32px,4vw,48px)} h2{font-size:26px} p{margin:0 0 14px} ul,ol{margin:0 0 14px;padding-left:22px} li{margin-bottom:8px}
+    code{background:rgba(212,107,8,.08);padding:.1em .38em;border-radius:6px} pre{margin:16px 0 18px;padding:18px 20px;overflow:auto;background:#241c14;color:#f7ead7;border-radius:16px}
+  </style>
+</head>
+<body>
+  <main class="page">
+    <section class="hero">
+      <div class="eyebrow">Project Layout</div>
+      <h1>Project Disk Layout</h1>
+      <p>这份文档解释一个项目在磁盘上会长成什么样，以及这些文件/目录分别被哪些模块消费。</p>
+    </section>
+    <section class="section">
+      <h2>1. 创建项目时初始化的目录</h2>
+      <pre><code>&lt;projects_dir&gt;/&lt;project_id&gt;/
+  purpose.md
+  wiki/
+    index.md
+    overview.md
+    log.md
+    entities/
+    concepts/
+    sources/
+    queries/
+    comparisons/
+    synthesis/
+  raw/
+    sources/
+  .llm-wiki/
+    project.json
+    ingest-cache.json
+    ingest-queue.json
+    chats/
+    checkpoints/
+    lancedb/</code></pre>
+      <p>其中一部分目录是创建时直接建好的，一部分例如 <code>checkpoints/</code>、<code>lancedb/</code>、<code>chats/</code> 会在真正用到时懒创建。</p>
+    </section>
+    <section class="section">
+      <h2>2. 各目录的职责</h2>
+      <ul>
+        <li><code>purpose.md</code>：项目知识库用途说明，普通 chat 和 Agent 都可能读它。</li>
+        <li><code>wiki/</code>：编译后的知识库主内容，是图谱、检索、普通 chat 的核心输入。</li>
+        <li><code>raw/sources/</code>：用户上传的原始文档，ingest 输入，也是 Agent 的 raw 工具读取范围。</li>
+        <li><code>.llm-wiki/project.json</code>：项目本地元数据。</li>
+        <li><code>.llm-wiki/ingest-cache.json</code>：文档内容 hash 缓存。</li>
+        <li><code>.llm-wiki/chats/</code>：普通 chat 的单会话消息文件。</li>
+        <li><code>.llm-wiki/conversations.json</code>：普通 chat 会话列表。</li>
+        <li><code>.llm-wiki/checkpoints/</code>：ingest 中间断点。</li>
+        <li><code>.llm-wiki/lancedb/</code>：每个项目自己的向量表。</li>
+      </ul>
+    </section>
+    <section class="section">
+      <h2>3. 哪些模块会动这些目录</h2>
+      <ul>
+        <li><code>documents/</code> 写 <code>raw/sources/</code></li>
+        <li><code>ingest/</code> 读 raw、写 wiki、写 cache/checkpoint、触发 embedding</li>
+        <li><code>search/</code> 读 wiki 和 <code>.llm-wiki/lancedb</code></li>
+        <li><code>chat/</code> 读写 <code>.llm-wiki/chats</code> 与 <code>conversations.json</code></li>
+        <li><code>agents/</code> 读 wiki、raw、ticket wiki，但不写聊天历史到项目磁盘</li>
+        <li><code>feedback/</code> 根据任务状态回写 wiki 页面</li>
+      </ul>
+    </section>
+  </main>
+</body>
+</html>

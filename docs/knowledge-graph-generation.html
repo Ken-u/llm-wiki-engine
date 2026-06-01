@@ -1,0 +1,531 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Knowledge Graph Generation</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f1e8;
+      --panel: #fffaf2;
+      --panel-strong: #fffdf8;
+      --text: #2f2418;
+      --muted: #6c5a46;
+      --line: #e2d2bc;
+      --accent: #d46b08;
+      --accent-soft: #fff1df;
+      --code: #2a2118;
+      --shadow: 0 18px 40px rgba(92, 62, 29, 0.08);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: "Noto Serif SC", "Source Han Serif SC", "Songti SC", serif;
+      background:
+        radial-gradient(circle at top left, rgba(212, 107, 8, 0.08), transparent 28%),
+        linear-gradient(180deg, #fbf7f0 0%, var(--bg) 100%);
+      color: var(--text);
+      line-height: 1.72;
+    }
+
+    .page {
+      width: min(1120px, calc(100vw - 32px));
+      margin: 32px auto 56px;
+    }
+
+    .hero {
+      background: linear-gradient(135deg, rgba(255, 250, 242, 0.95), rgba(255, 244, 228, 0.92));
+      border: 1px solid rgba(212, 107, 8, 0.18);
+      border-radius: 28px;
+      box-shadow: var(--shadow);
+      padding: 32px 32px 26px;
+    }
+
+    .eyebrow {
+      display: inline-block;
+      margin: 0 0 14px;
+      padding: 6px 12px;
+      border-radius: 999px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+    }
+
+    h1, h2, h3 {
+      font-weight: 700;
+      letter-spacing: 0.01em;
+      line-height: 1.25;
+      margin: 0;
+    }
+
+    h1 {
+      font-size: clamp(32px, 4vw, 48px);
+      margin-bottom: 14px;
+    }
+
+    h2 {
+      font-size: 26px;
+      margin-bottom: 16px;
+    }
+
+    h3 {
+      font-size: 20px;
+      margin-bottom: 12px;
+    }
+
+    p {
+      margin: 0 0 14px;
+    }
+
+    .lead {
+      max-width: 900px;
+      font-size: 18px;
+      color: var(--muted);
+    }
+
+    .summary {
+      margin-top: 22px;
+      padding: 18px 20px;
+      background: var(--panel-strong);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+    }
+
+    .toc {
+      margin-top: 24px;
+      padding: 22px 24px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      box-shadow: var(--shadow);
+    }
+
+    .toc ol {
+      margin: 14px 0 0;
+      padding-left: 22px;
+      columns: 2;
+      column-gap: 32px;
+    }
+
+    .toc li {
+      margin-bottom: 8px;
+      break-inside: avoid;
+    }
+
+    .section {
+      margin-top: 22px;
+      padding: 28px 30px;
+      background: rgba(255, 250, 242, 0.94);
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      box-shadow: var(--shadow);
+    }
+
+    .callout {
+      margin: 18px 0;
+      padding: 16px 18px;
+      background: var(--accent-soft);
+      border-left: 4px solid var(--accent);
+      border-radius: 14px;
+    }
+
+    ul, ol {
+      margin: 0 0 14px;
+      padding-left: 22px;
+    }
+
+    li {
+      margin-bottom: 8px;
+    }
+
+    code {
+      font-family: "SFMono-Regular", "Menlo", "Consolas", monospace;
+      font-size: 0.95em;
+      color: var(--code);
+      background: rgba(212, 107, 8, 0.08);
+      padding: 0.1em 0.38em;
+      border-radius: 6px;
+    }
+
+    pre {
+      margin: 16px 0 18px;
+      padding: 18px 20px;
+      overflow: auto;
+      background: #241c14;
+      color: #f7ead7;
+      border-radius: 16px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+    }
+
+    pre code {
+      background: transparent;
+      color: inherit;
+      padding: 0;
+    }
+
+    .grid {
+      display: grid;
+      gap: 16px;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      margin-top: 18px;
+    }
+
+    .card {
+      padding: 16px 18px;
+      background: var(--panel-strong);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+    }
+
+    .card strong {
+      display: block;
+      margin-bottom: 8px;
+      color: var(--accent);
+    }
+
+    .footer {
+      margin-top: 26px;
+      color: var(--muted);
+      font-size: 14px;
+      text-align: center;
+    }
+
+    @media (max-width: 820px) {
+      .page {
+        width: min(100vw - 20px, 1120px);
+        margin: 16px auto 32px;
+      }
+
+      .hero,
+      .toc,
+      .section {
+        padding: 22px 18px;
+        border-radius: 20px;
+      }
+
+      .toc ol {
+        columns: 1;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <section class="hero">
+      <div class="eyebrow">LLM Wiki Engine Docs</div>
+      <h1>Knowledge Graph Generation</h1>
+      <p class="lead">
+        本文档解释当前 <code>llm-wiki-engine</code> 里的知识图谱数据是如何从
+        <code>wiki/</code> 目录下的 markdown 文件动态推导出来的。重点不是 API，而是：
+        一个 wiki 页面怎样变成 node，哪些内容会变成 edge，页面标题、类型、路径、邻居关系分别来自哪里，以及当前实现有哪些约束。
+      </p>
+      <div class="summary">
+        <strong>一句话结论：</strong>
+        当前知识图谱不是单独编译产物，也不存数据库；它是在请求图谱页面时，实时扫描项目下所有
+        <code>wiki/**/*.md</code> 文件，再根据 frontmatter 的 <code>related</code> 和正文里的
+        <code>[[wikilink]]</code> 关系构建出来的。
+      </div>
+    </section>
+
+    <section class="toc">
+      <h2>目录</h2>
+      <ol>
+        <li>整体思路</li>
+        <li>扫描范围</li>
+        <li>Node 是怎么来的</li>
+        <li>Edge 是怎么来的</li>
+        <li><code>related</code> 的映射规则</li>
+        <li><code>[[wikilink]]</code> 的映射规则</li>
+        <li>邻居关系怎么算</li>
+        <li>返回给前端的数据结构</li>
+        <li>一个完整例子</li>
+        <li>与 wiki 文件格式的对应关系</li>
+        <li>当前实现的限制与风险</li>
+        <li>代码位置</li>
+      </ol>
+    </section>
+
+    <section class="section">
+      <h2>1. 整体思路</h2>
+      <p>
+        当前图谱逻辑的核心实现位于 <code>app/wiki/graph.py</code> 的
+        <code>build_wiki_graph(project_dir)</code>。它做的事情很直接：
+      </p>
+      <ol>
+        <li>递归扫描项目下的 <code>wiki/</code> 目录，找到所有 <code>.md</code> 页面。</li>
+        <li>每个页面先生成一个 graph node。</li>
+        <li>再从两个地方抽取关系：frontmatter 的 <code>related</code>，以及正文里的 <code>[[wikilink]]</code>。</li>
+        <li>把这些关系存成 edge，并顺手给 node 填好 <code>neighbors</code>。</li>
+      </ol>
+      <div class="callout">
+        这意味着知识图谱和 wiki 文件是强绑定的：如果你改了某个 markdown 页面的标题、类型、related、wikilink，
+        图谱下次请求时就会跟着变，不需要额外编译步骤。
+      </div>
+    </section>
+
+    <section class="section">
+      <h2>2. 扫描范围</h2>
+      <p>
+        图谱只扫描项目目录下的 <code>wiki/</code> 子树，也就是：
+      </p>
+      <pre><code>&lt;project&gt;/
+  wiki/
+    overview.md
+    index.md
+    entities/
+    concepts/
+    sources/
+    queries/
+    comparisons/
+    synthesis/
+    ...</code></pre>
+      <p>
+        只要文件后缀是 <code>.md</code>，无论在 <code>wiki/</code> 根下还是任意子目录下，都会被当成一个候选页面。
+        <code>raw/</code>、<code>purpose.md</code>、<code>schema.md</code> 这类非 <code>wiki/</code> 文件不会进入图谱。
+      </p>
+    </section>
+
+    <section class="section">
+      <h2>3. Node 是怎么来的</h2>
+      <p>
+        每个 <code>wiki/**/*.md</code> 文件都会先生成一个 node。当前实现里，node 主要有 4 个核心字段：
+      </p>
+      <div class="grid">
+        <div class="card">
+          <strong><code>id</code></strong>
+          文件名去掉扩展名后的 stem。例如 <code>wiki/entities/gms.md</code> 的 node id 是 <code>gms</code>。
+        </div>
+        <div class="card">
+          <strong><code>title</code></strong>
+          frontmatter 里的 <code>title</code>；如果没写，就回退成 <code>id</code>。
+        </div>
+        <div class="card">
+          <strong><code>type</code></strong>
+          frontmatter 里的 <code>type</code>，例如 <code>entity</code>、<code>concept</code>、<code>source</code>。
+        </div>
+        <div class="card">
+          <strong><code>path</code></strong>
+          相对项目根目录的路径，例如 <code>wiki/entities/gms.md</code>。
+        </div>
+      </div>
+      <p>
+        这些字段通过 <code>parse_frontmatter()</code> 读取 YAML frontmatter 后组装到 node 中。
+      </p>
+    </section>
+
+    <section class="section">
+      <h2>4. Edge 是怎么来的</h2>
+      <p>当前 edge 只有两种来源，没有第三种：</p>
+      <ol>
+        <li>页面 frontmatter 里的 <code>related</code></li>
+        <li>页面正文里的 <code>[[wikilink]]</code></li>
+      </ol>
+      <p>
+        当前实现不会从 <code>tags</code>、<code>sources</code>、目录层级、标题相似度、embedding 相似度中自动生成边。
+        所以图谱连接强度完全取决于页面作者或编译器是否明确写下了这些关系。
+      </p>
+    </section>
+
+    <section class="section">
+      <h2>5. <code>related</code> 的映射规则</h2>
+      <p>如果页面 frontmatter 里有这样的内容：</p>
+      <pre><code>---
+type: entity
+title: GMS
+related:
+  - google-mobile-services
+  - mada-edla
+---</code></pre>
+      <p>
+        那么图谱会直接加两条边：
+      </p>
+      <pre><code>(当前页 page_id, "google-mobile-services")
+(当前页 page_id, "mada-edla")</code></pre>
+      <p>
+        这里不会做进一步解析。也就是说，<code>related</code> 里写进去的值会被直接当成目标 page id 使用。
+      </p>
+      <div class="callout">
+        这点很重要：<code>related</code> 不是 path，也不是 title 匹配。
+        当前实现默认你写进去的就是目标页面的“图谱 id”。
+      </div>
+    </section>
+
+    <section class="section">
+      <h2>6. <code>[[wikilink]]</code> 的映射规则</h2>
+      <p>
+        正文中的 wikilink 先用一个非常简单的正则提取：
+      </p>
+      <pre><code>\[\[([^\]]+)\]\]</code></pre>
+      <p>提取到的 target 会再做 3 步归一化：</p>
+      <ol>
+        <li><code>strip()</code> 去首尾空白</li>
+        <li><code>lower()</code> 转小写</li>
+        <li>把空格替换成 <code>-</code></li>
+      </ol>
+      <p>例如：</p>
+      <pre><code>[[GMS]]                    -&gt; gms
+[[MADA EDLA 协议]]         -&gt; mada-edla-协议
+[[Google Mobile Services]] -&gt; google-mobile-services</code></pre>
+      <p>
+        然后图谱直接创建一条边：
+      </p>
+      <pre><code>(当前页 page_id, 归一化后的 target)</code></pre>
+      <p>
+        这里没有更复杂的解析逻辑，不会去查 path，也不会用前端那套 title/path/slug 多候选匹配规则。
+      </p>
+    </section>
+
+    <section class="section">
+      <h2>7. 邻居关系怎么算</h2>
+      <p>
+        图谱内部先累积原始 <code>edges</code>，然后做第二遍处理来填每个 node 的
+        <code>neighbors</code>：
+      </p>
+      <ol>
+        <li>如果有边 <code>(src, dst)</code>，则把 <code>dst</code> 加到 <code>src.neighbors</code></li>
+        <li>如果目标节点 <code>dst</code> 真的存在，也会把 <code>src</code> 加到 <code>dst.neighbors</code></li>
+        <li>最后对每个 node 的 <code>neighbors</code> 去重并排序</li>
+      </ol>
+      <p>
+        所以从 JSON 形态上看，<code>edges</code> 是原始方向边，<code>neighbors</code> 更像“图上可达的相邻节点列表”。
+      </p>
+    </section>
+
+    <section class="section">
+      <h2>8. 返回给前端的数据结构</h2>
+      <p>图谱最终会被序列化成这样一类结构：</p>
+      <pre><code>{
+  "nodes": [
+    {
+      "id": "gms",
+      "title": "GMS",
+      "type": "entity",
+      "path": "wiki/entities/gms.md",
+      "neighbors": ["google-mobile-services", "mada-edla"]
+    }
+  ],
+  "edges": [
+    {
+      "source": "gms",
+      "target": "google-mobile-services"
+    }
+  ]
+}</code></pre>
+      <p>
+        前端图谱页不会再去推理这些关系，它只拿到这份 JSON 后做可视化布局和点击预览。
+      </p>
+    </section>
+
+    <section class="section">
+      <h2>9. 一个完整例子</h2>
+      <p>假设项目里有两个页面：</p>
+      <pre><code>wiki/entities/gms.md
+wiki/concepts/mada-edla.md</code></pre>
+      <p><code>wiki/entities/gms.md</code> 内容：</p>
+      <pre><code>---
+type: entity
+title: GMS
+related:
+  - mada-edla
+---
+
+如果未签署 [[MADA EDLA]]，则无法直接获取 GMS 包。</code></pre>
+      <p><code>wiki/concepts/mada-edla.md</code> 内容：</p>
+      <pre><code>---
+type: concept
+title: MADA EDLA
+---</code></pre>
+      <p>生成结果会是：</p>
+      <ul>
+        <li>node 1：<code>id=gms</code>，<code>title=GMS</code>，<code>type=entity</code>，<code>path=wiki/entities/gms.md</code></li>
+        <li>node 2：<code>id=mada-edla</code>，<code>title=MADA EDLA</code>，<code>type=concept</code>，<code>path=wiki/concepts/mada-edla.md</code></li>
+        <li>edge A：来自 <code>related</code>，即 <code>(gms, mada-edla)</code></li>
+        <li>edge B：来自正文 <code>[[MADA EDLA]]</code>，归一化后也是 <code>(gms, mada-edla)</code></li>
+      </ul>
+      <p>
+        注意这里最后会出现两条原始 edge，但 <code>neighbors</code> 在 node 上会去重。
+      </p>
+    </section>
+
+    <section class="section">
+      <h2>10. 与 wiki 文件格式的对应关系</h2>
+      <p>
+        如果从“写 wiki 文件的人”角度看，当前知识图谱只关心这几类内容：
+      </p>
+      <div class="grid">
+        <div class="card">
+          <strong><code>title</code></strong>
+          决定图上的显示标题。
+        </div>
+        <div class="card">
+          <strong><code>type</code></strong>
+          决定节点类型，前端会据此着色。
+        </div>
+        <div class="card">
+          <strong><code>related</code></strong>
+          显式声明页面之间的图谱边。
+        </div>
+        <div class="card">
+          <strong><code>[[wikilink]]</code></strong>
+          从正文里再推导一层页面关系。
+        </div>
+      </div>
+      <p>
+        其他 frontmatter 字段，例如 <code>tags</code>、<code>sources</code>、<code>created</code>、<code>updated</code>，
+        当前都不会参与图谱连边。
+      </p>
+    </section>
+
+    <section class="section">
+      <h2>11. 当前实现的限制与风险</h2>
+      <ol>
+        <li>
+          <strong>node id 只取文件名 stem。</strong>
+          如果 <code>wiki/entities/gms.md</code> 和 <code>wiki/queries/gms.md</code> 同时存在，
+          两个页面都会争用 <code>gms</code> 这个 id，后扫描到的页面会覆盖先前页面。
+        </li>
+        <li>
+          <strong>wikilink 解析很原始。</strong>
+          只支持简单的 <code>[[...]]</code>，不支持更完整的 title/path/alias 容错逻辑。
+        </li>
+        <li>
+          <strong><code>related</code> 依赖人工写对目标 id。</strong>
+          如果 frontmatter 里写的是 title 或 path，而不是目标页面的 stem/slug，图谱边可能连不上真实节点。
+        </li>
+        <li>
+          <strong>可能存在悬空边。</strong>
+          edge 可以指向一个并不存在的目标 id；这种边会保留在 <code>edges</code> 里，但不会生成完整的目标 node。
+        </li>
+        <li>
+          <strong>没有缓存。</strong>
+          每次请求都会重新扫 <code>wiki/</code>，项目很大时会增加实时开销。
+        </li>
+      </ol>
+      <div class="callout">
+        所以当前图谱更像“基于 markdown 语法和 frontmatter 的轻量页面关系图”，而不是一个经过规范化建模、去重、别名解析后的严格知识图谱。
+      </div>
+    </section>
+
+    <section class="section">
+      <h2>12. 代码位置</h2>
+      <ul>
+        <li><code>app/wiki/graph.py</code>：图谱扫描、node/edge 构建、JSON 序列化</li>
+        <li><code>app/wiki/frontmatter.py</code>：frontmatter 解析，提供 <code>title</code>、<code>type</code>、<code>related</code> 等字段</li>
+        <li><code>app/wiki/router.py</code>：图谱页面请求时触发构建</li>
+        <li><code>src/components/wiki/KnowledgeGraph.tsx</code>：前端消费图谱 JSON 并做画布渲染</li>
+      </ul>
+    </section>
+
+    <p class="footer">
+      文档基于当前代码实现整理。如果后续统一了 wikilink 解析逻辑、改成 path-based node id 或加入缓存，本页结论也需要同步更新。
+    </p>
+  </main>
+</body>
+</html>

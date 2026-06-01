@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Search And Retrieval</title>
+  <style>
+    :root { --bg:#f6f1e8; --panel:#fffaf2; --text:#2f2418; --muted:#6c5a46; --line:#e2d2bc; --accent:#d46b08; --shadow:0 18px 40px rgba(92,62,29,.08); }
+    *{box-sizing:border-box} body{margin:0;font-family:"Noto Serif SC","Source Han Serif SC","Songti SC",serif;background:linear-gradient(180deg,#fbf7f0 0%,var(--bg) 100%);color:var(--text);line-height:1.72}
+    .page{width:min(1120px,calc(100vw - 32px));margin:32px auto 56px}.hero,.section{background:var(--panel);border:1px solid var(--line);border-radius:24px;box-shadow:var(--shadow);padding:28px 30px;margin-top:22px}
+    .eyebrow{display:inline-block;padding:6px 12px;border-radius:999px;background:#fff1df;color:var(--accent);font-size:13px;font-weight:700;letter-spacing:.04em;margin-bottom:14px}
+    h1,h2{margin:0 0 14px;line-height:1.25} h1{font-size:clamp(32px,4vw,48px)} h2{font-size:26px} p{margin:0 0 14px} ul,ol{margin:0 0 14px;padding-left:22px} li{margin-bottom:8px}
+    code{background:rgba(212,107,8,.08);padding:.1em .38em;border-radius:6px} pre{margin:16px 0 18px;padding:18px 20px;overflow:auto;background:#241c14;color:#f7ead7;border-radius:16px}
+  </style>
+</head>
+<body>
+  <main class="page">
+    <section class="hero">
+      <div class="eyebrow">Retrieval</div>
+      <h1>Search And Retrieval</h1>
+      <p>这份文档解释 engine 当前的检索体系：关键词检索、向量检索、RRF 融合、图谱扩展，以及 embedding 是如何支撑向量检索的。</p>
+    </section>
+    <section class="section">
+      <h2>1. 检索输入是谁</h2>
+      <ul>
+        <li>普通搜索 API：用户显式输入查询。</li>
+        <li>普通 chat：直接用用户消息作为查询。</li>
+        <li>Agent tool：模型生成 <code>search_wiki</code> / <code>search_ticket_cases</code> 的查询参数。</li>
+      </ul>
+      <p>当前没有统一的 query rewriting 层，绝大多数时候就是“拿用户或模型给出的 query 直接搜”。</p>
+    </section>
+    <section class="section">
+      <h2>2. 关键词检索</h2>
+      <p><code>search_bm25()</code> 会扫描项目下的 wiki 页面，做 token 化和 BM25 打分，并给出标题、path、snippet。</p>
+      <p>它的优势是：</p>
+      <ul>
+        <li>精确术语命中稳定</li>
+        <li>文件名、标题短语命中容易拿高分</li>
+        <li>不依赖 embedding 服务</li>
+      </ul>
+    </section>
+    <section class="section">
+      <h2>3. 向量检索</h2>
+      <p>向量检索依赖每个项目自己的 <code>.llm-wiki/lancedb/wiki_chunks_v2</code> 表。</p>
+      <ol>
+        <li>页面去 frontmatter 后按 markdown chunker 切块。</li>
+        <li>每个 chunk 用 embedding 模型得到向量。</li>
+        <li>写入 LanceDB，保留 <code>page_id</code>、<code>chunk_index</code>、<code>heading_path</code>、<code>chunk_text</code>。</li>
+        <li>搜索时对 query 也做 embedding，然后查近邻 chunk。</li>
+      </ol>
+    </section>
+    <section class="section">
+      <h2>4. 融合检索</h2>
+      <p>默认模式是 hybrid：BM25 和向量结果各取一批，再交给 <code>rrf_fusion()</code> 做 Reciprocal Rank Fusion。</p>
+      <p>这样做的目标是：</p>
+      <ul>
+        <li>兼顾精确名词命中与语义相似</li>
+        <li>避免只靠 BM25 时对口语问法太脆</li>
+        <li>避免只靠向量时丢掉标题/文件名的强信号</li>
+      </ul>
+    </section>
+    <section class="section">
+      <h2>5. 图谱扩展只在普通 chat 中自动启用</h2>
+      <p>普通 chat 在拿到融合结果后，会用知识图谱做 1-hop 扩展，把相关页面再带进上下文。Agent 当前不会自动做这一步，而是由模型自己决定要不要继续读别的页。</p>
+    </section>
+    <section class="section">
+      <h2>6. Embedding 更新时机</h2>
+      <ul>
+        <li>ingest 写完 wiki 文件后会调用 <code>embed_pages()</code></li>
+        <li>wiki 页面被 API 修改后也会尝试重新 embedding 该页</li>
+      </ul>
+      <p>也就是说，embedding 不是离线批任务，而是跟随 wiki 变更局部更新。</p>
+    </section>
+  </main>
+</body>
+</html>

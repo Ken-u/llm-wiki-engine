@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Config And Admin Settings</title>
+  <style>
+    :root { --bg:#f6f1e8; --panel:#fffaf2; --text:#2f2418; --muted:#6c5a46; --line:#e2d2bc; --accent:#d46b08; --shadow:0 18px 40px rgba(92,62,29,.08); }
+    *{box-sizing:border-box} body{margin:0;font-family:"Noto Serif SC","Source Han Serif SC","Songti SC",serif;background:linear-gradient(180deg,#fbf7f0 0%,var(--bg) 100%);color:var(--text);line-height:1.72}
+    .page{width:min(1120px,calc(100vw - 32px));margin:32px auto 56px}.hero,.section{background:var(--panel);border:1px solid var(--line);border-radius:24px;box-shadow:var(--shadow);padding:28px 30px;margin-top:22px}
+    .eyebrow{display:inline-block;padding:6px 12px;border-radius:999px;background:#fff1df;color:var(--accent);font-size:13px;font-weight:700;letter-spacing:.04em;margin-bottom:14px}
+    h1,h2{margin:0 0 14px;line-height:1.25} h1{font-size:clamp(32px,4vw,48px)} h2{font-size:26px} p{margin:0 0 14px} ul,ol{margin:0 0 14px;padding-left:22px} li{margin-bottom:8px}
+    code{background:rgba(212,107,8,.08);padding:.1em .38em;border-radius:6px}
+  </style>
+</head>
+<body>
+  <main class="page">
+    <section class="hero">
+      <div class="eyebrow">Config Layers</div>
+      <h1>Config And Admin Settings</h1>
+      <p>这份文档解释 engine 配置是如何被加载和覆盖的，以及 admin 页面到底改动了哪一层配置。</p>
+    </section>
+    <section class="section">
+      <h2>1. 配置优先级</h2>
+      <ol>
+        <li><code>config.yaml</code></li>
+        <li>环境变量</li>
+        <li>数据库 <code>system_settings</code> 表</li>
+      </ol>
+      <p>后者覆盖前者，数据库层优先级最高。</p>
+    </section>
+    <section class="section">
+      <h2>2. 配置分组</h2>
+      <ul>
+        <li><code>server</code>：host、port、projects_dir</li>
+        <li><code>auth</code>：JWT、注册开关</li>
+        <li><code>llm</code>：主 LLM provider、model、temperature、context size</li>
+        <li><code>embedding</code>：embedding provider、model、dimensions</li>
+        <li><code>search</code>：RRF 和若干打分 bonus</li>
+        <li><code>feedback</code>：evaluator/compiler 模型配置、revision 限制、去重窗口</li>
+      </ul>
+    </section>
+    <section class="section">
+      <h2>3. Admin 页面改的不是 YAML 文件</h2>
+      <p>管理员在 UI 里修改设置时，最终是写入数据库里的 <code>system_settings</code> 表，然后刷新内存里的配置对象。也就是说：</p>
+      <ul>
+        <li>它不会回写原始 <code>config.yaml</code></li>
+        <li>重启后仍然有效，因为会再次从 DB 加载覆盖</li>
+        <li>这层特别适合线上调 LLM/embedding/feedback 模型参数</li>
+      </ul>
+    </section>
+    <section class="section">
+      <h2>4. Feedback 模型是独立配置的</h2>
+      <p>feedback 下有两套专门模型配置：</p>
+      <ul>
+        <li><code>feedback.evaluator</code></li>
+        <li><code>feedback.compiler</code></li>
+      </ul>
+      <p>如果这些字段为空，就回退继承主 LLM；如果单独配置了 model/provider/key，就走独立链路。</p>
+    </section>
+  </main>
+</body>
+</html>

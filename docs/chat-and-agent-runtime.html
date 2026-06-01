@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Chat And Agent Runtime</title>
+  <style>
+    :root { --bg:#f6f1e8; --panel:#fffaf2; --text:#2f2418; --muted:#6c5a46; --line:#e2d2bc; --accent:#d46b08; --shadow:0 18px 40px rgba(92,62,29,.08); }
+    *{box-sizing:border-box} body{margin:0;font-family:"Noto Serif SC","Source Han Serif SC","Songti SC",serif;background:linear-gradient(180deg,#fbf7f0 0%,var(--bg) 100%);color:var(--text);line-height:1.72}
+    .page{width:min(1120px,calc(100vw - 32px));margin:32px auto 56px}.hero,.section{background:var(--panel);border:1px solid var(--line);border-radius:24px;box-shadow:var(--shadow);padding:28px 30px;margin-top:22px}
+    .eyebrow{display:inline-block;padding:6px 12px;border-radius:999px;background:#fff1df;color:var(--accent);font-size:13px;font-weight:700;letter-spacing:.04em;margin-bottom:14px}
+    h1,h2{margin:0 0 14px;line-height:1.25} h1{font-size:clamp(32px,4vw,48px)} h2{font-size:26px} p{margin:0 0 14px} ul,ol{margin:0 0 14px;padding-left:22px} li{margin-bottom:8px}
+    code{background:rgba(212,107,8,.08);padding:.1em .38em;border-radius:6px} pre{margin:16px 0 18px;padding:18px 20px;overflow:auto;background:#241c14;color:#f7ead7;border-radius:16px}
+  </style>
+</head>
+<body>
+  <main class="page">
+    <section class="hero">
+      <div class="eyebrow">Runtime Split</div>
+      <h1>Chat And Agent Runtime</h1>
+      <p>这份文档专门解释两个问答运行时：普通项目 chat 和 Agent chat。它们都回答问题，但知识接入方式完全不同，维护时必须分开理解。</p>
+    </section>
+    <section class="section">
+      <h2>1. 普通项目 Chat：固定 RAG</h2>
+      <ol>
+        <li>从 <code>.llm-wiki/chats/</code> 和 <code>conversations.json</code> 读取会话历史。</li>
+        <li>对用户问题执行 hybrid search：BM25 + vector + RRF。</li>
+        <li>根据命中的 page id 做 1-hop 图谱扩展。</li>
+        <li>按上下文预算读取 purpose、index、相关 wiki 页面。</li>
+        <li>拼成一个 system prompt，然后直接流式调用 LLM。</li>
+        <li>回答完成后，把 user/assistant 消息写回磁盘聊天记录。</li>
+      </ol>
+      <p>这里模型没有显式调用工具的能力，所有知识都是后端先准备好的。</p>
+    </section>
+    <section class="section">
+      <h2>2. Agent Chat：工具编排</h2>
+      <ol>
+        <li>加载 Agent 配置和关联项目。</li>
+        <li>构建 <code>ToolContext</code>：主项目列表 + 可选 ticket 项目。</li>
+        <li>根据上下文动态注册工具定义。</li>
+        <li>进入 <code>run_agent_turn()</code> 循环，调用 <code>complete_with_tools()</code>。</li>
+        <li>如果模型发起 tool call，就执行工具并把结果回填到消息流中。</li>
+        <li>如果模型不再调用工具，则输出最终回答。</li>
+      </ol>
+      <p>这里知识不再由后端一次性预装，而是由模型在运行时决定什么时候搜、什么时候读页、什么时候读 raw。</p>
+    </section>
+    <section class="section">
+      <h2>3. 二者的根本差异</h2>
+      <ul>
+        <li>普通 chat 的知识源固定：主项目 wiki。</li>
+        <li>Agent 的知识源可按需切换：主 wiki、ticket wiki、raw/sources。</li>
+        <li>普通 chat 的预算主要是“后端预先拼多少内容”。</li>
+        <li>Agent 的预算主要是“最多允许多少次工具调用、每次工具返回多大内容”。</li>
+      </ul>
+    </section>
+    <section class="section">
+      <h2>4. 为什么两条链路都还保留</h2>
+      <p>当前系统没有把普通 chat 也迁到全 toolcall。原因很简单：</p>
+      <ul>
+        <li>普通 chat 更稳定，成本和时延更可控。</li>
+        <li>Agent 更灵活，适合复杂问题、跨项目问题、需要 raw 兜底的问题。</li>
+      </ul>
+      <p>所以维护时不要假设“chat 和 agent 只是 UI 不同”，它们是两套知识接入架构。</p>
+    </section>
+  </main>
+</body>
+</html>

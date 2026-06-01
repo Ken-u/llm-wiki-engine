@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Feedback Repair Loop</title>
+  <style>
+    :root { --bg:#f6f1e8; --panel:#fffaf2; --text:#2f2418; --muted:#6c5a46; --line:#e2d2bc; --accent:#d46b08; --shadow:0 18px 40px rgba(92,62,29,.08); }
+    *{box-sizing:border-box} body{margin:0;font-family:"Noto Serif SC","Source Han Serif SC","Songti SC",serif;background:linear-gradient(180deg,#fbf7f0 0%,var(--bg) 100%);color:var(--text);line-height:1.72}
+    .page{width:min(1120px,calc(100vw - 32px));margin:32px auto 56px}.hero,.section{background:var(--panel);border:1px solid var(--line);border-radius:24px;box-shadow:var(--shadow);padding:28px 30px;margin-top:22px}
+    .eyebrow{display:inline-block;padding:6px 12px;border-radius:999px;background:#fff1df;color:var(--accent);font-size:13px;font-weight:700;letter-spacing:.04em;margin-bottom:14px}
+    h1,h2{margin:0 0 14px;line-height:1.25} h1{font-size:clamp(32px,4vw,48px)} h2{font-size:26px} p{margin:0 0 14px} ul,ol{margin:0 0 14px;padding-left:22px} li{margin-bottom:8px}
+    code{background:rgba(212,107,8,.08);padding:.1em .38em;border-radius:6px}
+  </style>
+</head>
+<body>
+  <main class="page">
+    <section class="hero">
+      <div class="eyebrow">Feedback Loop</div>
+      <h1>Feedback Repair Loop</h1>
+      <p>这份文档解释当前 feedback 模块的职责：当 Agent 借助 raw 工具兜底后，系统如何把这些信号沉淀成修复任务、候选补丁和人工编审流。</p>
+    </section>
+    <section class="section">
+      <h2>1. 这个模块解决什么问题</h2>
+      <p>Agent 读 raw 往往意味着 wiki 不够。feedback 模块的目标就是把这种“问答时临场兜底”变成“后续可以修 wiki 的任务”。</p>
+    </section>
+    <section class="section">
+      <h2>2. FeedbackTask 保存了什么</h2>
+      <ul>
+        <li>来源对话内容</li>
+        <li>工具轨迹、wiki reads、raw reads</li>
+        <li>evaluator 结果和置信度</li>
+        <li>repair candidate</li>
+        <li>review guidance 和 revision_count</li>
+      </ul>
+      <p>所以它不是一个单纯的“待办事项”，而是完整的审计对象。</p>
+    </section>
+    <section class="section">
+      <h2>3. 状态流转</h2>
+      <p>当前状态集合包括：</p>
+      <ul>
+        <li><code>pending_evaluation</code></li>
+        <li><code>evaluation_done</code></li>
+        <li><code>pending_review</code></li>
+        <li><code>pending_recompile</code></li>
+        <li><code>approved</code></li>
+        <li><code>rejected</code></li>
+        <li><code>applied</code></li>
+        <li><code>compile_failed</code></li>
+      </ul>
+      <p>状态迁移是受限的，不是任意跳转。</p>
+    </section>
+    <section class="section">
+      <h2>4. 人工编审不是纯手工改文档</h2>
+      <p>当前 review 动作有三种：</p>
+      <ul>
+        <li><code>approve</code></li>
+        <li><code>reject</code></li>
+        <li><code>revise</code></li>
+      </ul>
+      <p><code>revise</code> 的重点是用户输入一段一次性 guidance，系统随后触发重编译，而不是要求用户直接手改 markdown。</p>
+    </section>
+    <section class="section">
+      <h2>5. 去重与限制</h2>
+      <ul>
+        <li>同一页面在一定时间窗内支持重复任务去重。</li>
+        <li>每个任务的 revision 次数受 <code>feedback.max_revisions</code> 限制。</li>
+        <li>模型配置与主 LLM 配置独立。</li>
+      </ul>
+    </section>
+  </main>
+</body>
+</html>

@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Engine Runtime Overview</title>
+  <style>
+    :root { --bg:#f6f1e8; --panel:#fffaf2; --text:#2f2418; --muted:#6c5a46; --line:#e2d2bc; --accent:#d46b08; --shadow:0 18px 40px rgba(92,62,29,.08); }
+    *{box-sizing:border-box} body{margin:0;font-family:"Noto Serif SC","Source Han Serif SC","Songti SC",serif;background:linear-gradient(180deg,#fbf7f0 0%,var(--bg) 100%);color:var(--text);line-height:1.72}
+    .page{width:min(1120px,calc(100vw - 32px));margin:32px auto 56px}.hero,.section{background:var(--panel);border:1px solid var(--line);border-radius:24px;box-shadow:var(--shadow);padding:28px 30px;margin-top:22px}
+    .eyebrow{display:inline-block;padding:6px 12px;border-radius:999px;background:#fff1df;color:var(--accent);font-size:13px;font-weight:700;letter-spacing:.04em;margin-bottom:14px}
+    h1,h2,h3{margin:0 0 14px;line-height:1.25} h1{font-size:clamp(32px,4vw,48px)} h2{font-size:26px} h3{font-size:20px} p{margin:0 0 14px} ul,ol{margin:0 0 14px;padding-left:22px} li{margin-bottom:8px}
+    code{background:rgba(212,107,8,.08);padding:.1em .38em;border-radius:6px} pre{margin:16px 0 18px;padding:18px 20px;overflow:auto;background:#241c14;color:#f7ead7;border-radius:16px}
+    .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;margin-top:18px}.card{padding:16px 18px;background:#fffdf8;border:1px solid var(--line);border-radius:16px}.card strong{display:block;margin-bottom:8px;color:var(--accent)}
+  </style>
+</head>
+<body>
+  <main class="page">
+    <section class="hero">
+      <div class="eyebrow">Runtime Overview</div>
+      <h1>Engine Runtime Overview</h1>
+      <p>这份文档从系统整体视角解释 <code>llm-wiki-engine</code> 怎么运行：应用启动时做什么、项目和磁盘目录怎么关联、文档上传后怎么进入 ingest、wiki/search/chat/agent/feedback 这些模块之间的边界是什么。</p>
+    </section>
+    <section class="section">
+      <h2>1. 启动时会发生什么</h2>
+      <ol>
+        <li>FastAPI 应用启动，执行 <code>app/main.py</code> 里的 lifespan。</li>
+        <li>调用 <code>init_db()</code> 初始化数据库、补 migration、加载系统配置覆盖。</li>
+        <li>启动 ingest 队列 worker。</li>
+        <li>恢复中断的 ingest job。</li>
+      </ol>
+      <p>也就是说，engine 的运行不是“纯 stateless API”。它在进程内维护了一个 ingest 队列执行器，并且依赖磁盘项目目录持续存在。</p>
+    </section>
+    <section class="section">
+      <h2>2. 系统的几个核心对象</h2>
+      <div class="grid">
+        <div class="card"><strong>Project</strong>系统的基础单位。一个项目同时对应数据库记录和磁盘目录。</div>
+        <div class="card"><strong>Raw Documents</strong>上传到 <code>raw/sources/</code> 的原始资料，是 ingest 的输入。</div>
+        <div class="card"><strong>Wiki</strong>编译后的 markdown 页面，位于 <code>wiki/</code> 目录，是检索、图谱、普通 chat 的主要知识源。</div>
+        <div class="card"><strong>Agent</strong>面向工具调用的问答入口，可跨项目、可读 raw、可选调用 ticket wiki。</div>
+        <div class="card"><strong>Feedback Task</strong>回答后异步产生的修复任务，用于把 raw 兜底信号变成 wiki 修复候选。</div>
+      </div>
+    </section>
+    <section class="section">
+      <h2>3. 主运行链路</h2>
+      <pre><code>用户/前端
+  -> 项目创建
+  -> 上传 raw 文档
+  -> 触发 ingest
+  -> 生成 wiki/*.md + embedding + graph
+  -> 普通 search / chat 使用 wiki
+  -> Agent 按需 search wiki / read wiki / read raw / search ticket
+  -> 如果 Agent 依赖 raw 完成回答
+  -> 进入 feedback queue，准备后续修复 wiki</code></pre>
+    </section>
+    <section class="section">
+      <h2>4. 每个模块的职责边界</h2>
+      <ul>
+        <li><code>projects/</code>：创建项目、维护成员权限、初始化磁盘目录。</li>
+        <li><code>documents/</code>：把上传文件保存到 <code>raw/sources/</code>。</li>
+        <li><code>ingest/</code>：把 raw 文档编译成 wiki 页面，并触发 embedding。</li>
+        <li><code>wiki/</code>：暴露文件树、页面读写、overview、graph。</li>
+        <li><code>search/</code>：关键词检索、向量检索、融合检索。</li>
+        <li><code>chat/</code>：普通项目聊天，走预拼上下文 RAG。</li>
+        <li><code>agents/</code>：toolcall orchestrator，支持 wiki/ticket/raw 工具。</li>
+        <li><code>feedback/</code>：异步修复闭环和人工编审流。</li>
+        <li><code>admin/</code>：在线修改 LLM / embedding / feedback 模型设置。</li>
+      </ul>
+    </section>
+    <section class="section">
+      <h2>5. 为什么这个系统是“磁盘优先”的</h2>
+      <p>当前 engine 的知识主存不是数据库，而是项目目录本身。数据库更多是做索引和权限：</p>
+      <ul>
+        <li>项目页面实际存储在磁盘的 <code>wiki/</code> 里。</li>
+        <li>聊天记录存储在 <code>.llm-wiki/chats/</code> 里。</li>
+        <li>embedding 存储在 <code>.llm-wiki/lancedb/</code> 里。</li>
+        <li>数据库里只存项目、用户、Agent、Job、FeedbackTask 等元信息。</li>
+      </ul>
+      <p>这也是为什么理解项目目录结构对维护 engine 非常重要。</p>
+    </section>
+    <section class="section">
+      <h2>6. 普通 Chat 和 Agent 的分叉点</h2>
+      <p>两条链路的核心区别是：</p>
+      <ul>
+        <li>普通 chat：后端先做检索和拼接，然后把相关 wiki 页面直接塞进 prompt。</li>
+        <li>Agent：后端只给模型工具，模型自己决定要不要搜 wiki、读页、查 ticket、读 raw。</li>
+      </ul>
+      <p>所以普通 chat 更像固定 RAG，Agent 更像受控的工具编排运行时。</p>
+    </section>
+  </main>
+</body>
+</html>

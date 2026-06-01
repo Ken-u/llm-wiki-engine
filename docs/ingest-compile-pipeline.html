@@ -221,7 +221,7 @@
     <section class="hero">
       <div class="eyebrow">llm-wiki-engine / docs</div>
       <h1>Wiki Compile / Ingest Pipeline</h1>
-      <p class="lead">本文档描述 <code>llm-wiki-engine</code> 当前实际运行的 wiki 编译流程。这里的“编译”就是把 <code>raw/sources/</code> 里的原始文档解析、送入 LLM、生成 <code>wiki/</code> 下的结构化页面，并重新做 embedding。</p>
+      <p class="lead">本文档描述 <code>llm-wiki-engine</code> 当前实际运行的 wiki 编译流程。这里的“编译”就是把 <code>raw/sources/</code> 里的原始文档解析、送入 LLM、生成 <code>wiki/</code> 下的结构化页面，并重新做 embedding；同时标出哪些步骤会读写 SQL 业务库或 LanceDB 向量库。</p>
       <div class="summary">
         <p>这份说明基于当前代码实现整理，不是未来规划。重点回答几个问题：</p>
         <ul>
@@ -230,6 +230,7 @@
           <li>原始文档如何进入 prompt</li>
           <li>大文档如何避免上下文爆炸</li>
           <li>LLM 输出如何被解析、落盘、合并</li>
+          <li>哪些步骤会和数据库交互</li>
           <li>失败后如何重试和恢复</li>
         </ul>
       </div>
@@ -243,6 +244,7 @@
         <li>项目目录约定</li>
         <li>API 层如何触发编译</li>
         <li>Job 和队列模型</li>
+        <li>数据库交互边界</li>
         <li>主流程总览</li>
         <li>解析原始文档</li>
         <li>缓存机制</li>
@@ -294,6 +296,9 @@
         <div class="card"><strong>输出解析</strong><code>app/ingest/parser.py</code></div>
         <div class="card"><strong>写入与合并</strong><code>app/ingest/writer.py</code></div>
         <div class="card"><strong>文档解析</strong><code>app/documents/parser.py</code></div>
+        <div class="card"><strong>数据库模型</strong><code>app/ingest/models.py</code></div>
+        <div class="card"><strong>数据库会话</strong><code>app/database.py</code></div>
+        <div class="card"><strong>Embedding/LanceDB</strong><code>app/embedding/service.py</code></div>
         <div class="card"><strong>LLM 客户端</strong><code>app/llm/client.py</code></div>
       </div>
     </section>
@@ -318,7 +323,8 @@
     synthesis/
   .llm-wiki/
     ingest-cache.json
-    checkpoints/</code></pre>
+    checkpoints/
+    lancedb/</code></pre>
       <p>编译时真正被读入上下文的项目级文件主要是：</p>
       <ul>
         <li><code>purpose.md</code></li>
@@ -332,18 +338,19 @@
       <h2>4. API 层如何触发编译</h2>
       <p>入口在 <code>POST /api/projects/{project_id}/ingest</code>，实现位置是 <code>app/ingest/router.py</code>。</p>
       <ul>
-        <li>先校验用户是否属于项目</li>
-        <li>读取项目磁盘目录 <code>project.disk_path</code></li>
+        <li>先通过数据库校验用户是否属于项目：<code>check_membership(db, project_id, user)</code></li>
+        <li>再从数据库读取项目记录：<code>get_project_or_404(db, project_id)</code></li>
+        <li>使用项目记录里的磁盘目录 <code>project.disk_path</code></li>
         <li>默认扫描 <code>&lt;project&gt;/raw/sources/</code> 下的所有源文件</li>
         <li>如果请求里带了 <code>source_file</code>，则只编译该文件</li>
-        <li>每个源文件创建一个独立 ingest job</li>
+        <li>每个源文件调用 <code>ingest_queue.enqueue()</code>，在数据库里创建一个独立 <code>ingest_jobs</code> 记录</li>
         <li>API 返回 <code>202 Accepted</code>，实际处理异步执行</li>
       </ul>
       <p>补充接口：</p>
       <ul>
-        <li><code>POST /api/projects/{project_id}/ingest/{job_id}/retry</code></li>
-        <li><code>GET /api/projects/{project_id}/ingest/status</code></li>
-        <li><code>GET /api/projects/{project_id}/ingest/history</code></li>
+        <li><code>POST /api/projects/{project_id}/ingest/{job_id}/retry</code>：查询旧 job，校验项目归属，把旧 job 标记为 <code>superseded</code> 后创建新 job</li>
+        <li><code>GET /api/projects/{project_id}/ingest/status</code>：查询数据库中 <code>pending</code> / <code>processing</code> 的 job</li>
+        <li><code>GET /api/projects/{project_id}/ingest/history</code>：查询非 <code>superseded</code> 的历史 job</li>
       </ul>
     </section>
 
@@ -351,11 +358,14 @@
       <h2>5. Job 和队列模型</h2>
       <p>任务模型在 <code>app/ingest/models.py</code> 的 <code>IngestJob</code>。</p>
       <div class="grid">
+        <div class="card"><strong>source_path</strong>源文件的绝对或项目内路径</div>
         <div class="card"><strong>status</strong><code>pending / processing / done / failed / superseded</code></div>
         <div class="card"><strong>progress</strong>当前进度文案，面向 UI 展示</div>
         <div class="card"><strong>step</strong><code>0=queued 1=analysis_done 2=generation_done 3=written</code></div>
         <div class="card"><strong>files_written</strong>本次最终写入的 wiki 文件路径列表</div>
+        <div class="card"><strong>error</strong>失败原因或最近一次重试错误</div>
         <div class="card"><strong>retry_count</strong>当前重试次数</div>
+        <div class="card"><strong>created_by</strong>触发该 job 的用户 ID</div>
       </div>
       <p>队列在 <code>app/ingest/queue.py</code>，关键行为如下：</p>
       <ul>
@@ -367,7 +377,28 @@
     </section>
 
     <section class="section">
-      <h2>6. 主流程总览</h2>
+      <h2>6. 数据库交互边界</h2>
+      <p>当前 ingest 流程涉及两类数据库：全局 SQLAlchemy 业务库，以及每个项目目录下独立的 LanceDB 向量库。wiki 页面正文、编译缓存和 checkpoint 都不是 SQL 记录，而是项目目录里的文件。</p>
+      <div class="grid">
+        <div class="card"><strong>SQL 业务库</strong><code>Project</code>、<code>ProjectMember</code>、<code>IngestJob</code> 等表，使用 <code>AsyncSession</code></div>
+        <div class="card"><strong>LanceDB 向量库</strong><code>.llm-wiki/lancedb/wiki_chunks_v2</code>，保存 wiki chunk 和向量</div>
+        <div class="card"><strong>文件系统状态</strong><code>wiki/</code>、<code>ingest-cache.json</code>、<code>checkpoints/</code>，不进 SQL</div>
+      </div>
+      <p>SQL 交互点如下：</p>
+      <ul>
+        <li>触发编译时，API 查询 <code>ProjectMember</code> 做权限校验，查询 <code>Project</code> 获取 <code>disk_path</code>。</li>
+        <li><code>enqueue()</code> 插入 <code>ingest_jobs</code>：初始状态为 <code>pending</code>，<code>step=0</code>，记录 <code>source_path</code> 和 <code>created_by</code>。</li>
+        <li>任务执行中，队列反复更新 <code>ingest_jobs.progress</code> 和 <code>ingest_jobs.step</code>，用于前端状态展示和断点恢复。</li>
+        <li>任务成功后，队列更新 <code>status=done</code>、<code>progress=Complete</code>、<code>step=3</code>、<code>files_written</code>、<code>completed_at</code>。</li>
+        <li>任务失败时，队列查询当前 job 的 <code>retry_count</code> 和 <code>step</code>；未超过重试上限则更新回 <code>pending</code>，否则更新为 <code>failed</code>。</li>
+        <li>服务启动时，<code>recover_interrupted_jobs()</code> 查询 <code>pending</code> / <code>processing</code> 的 <code>IngestJob</code>，再查询对应 <code>Project.disk_path</code> 重新入队。</li>
+        <li>状态、历史、删除、重试接口都会查询或修改 <code>ingest_jobs</code>；删除接口会对非运行中的 job 执行 <code>db.delete(job)</code>。</li>
+      </ul>
+      <p>LanceDB 交互点只有 embedding 阶段：<code>embed_pages()</code> 连接 <code>.llm-wiki/lancedb</code>，打开或创建 <code>wiki_chunks_v2</code> 表，按 <code>page_id</code> 删除旧 chunk，再写入本次页面的新 chunk 向量。</p>
+    </section>
+
+    <section class="section">
+      <h2>7. 主流程总览</h2>
       <p>主函数是 <code>app/ingest/pipeline.py</code> 中的 <code>auto_ingest()</code>。</p>
       <pre><code>Parse document
   -&gt; Cache check
@@ -384,7 +415,7 @@
     </section>
 
     <section class="section">
-      <h2>7. 解析原始文档</h2>
+      <h2>8. 解析原始文档</h2>
       <p>原始文档解析在 <code>app/documents/parser.py</code>。</p>
       <ul>
         <li>PDF: <code>PyMuPDF</code></li>
@@ -397,7 +428,7 @@
     </section>
 
     <section class="section">
-      <h2>8. 缓存机制</h2>
+      <h2>9. 缓存机制</h2>
       <p>缓存逻辑在 <code>app/ingest/cache.py</code>。</p>
       <ul>
         <li>对源文档内容做哈希</li>
@@ -411,7 +442,7 @@
     </section>
 
     <section class="section">
-      <h2>9. Checkpoint 机制</h2>
+      <h2>10. Checkpoint 机制</h2>
       <p>checkpoint 文件位于：</p>
       <pre><code>.llm-wiki/checkpoints/&lt;sha256(source_path)前16位&gt;.json</code></pre>
       <p>存储内容包括 <code>step</code>、<code>source</code>、<code>analysis</code>、<code>generation</code>。</p>
@@ -419,7 +450,7 @@
     </section>
 
     <section class="section">
-      <h2>10. 编译前读入哪些上下文</h2>
+      <h2>11. 编译前读入哪些上下文</h2>
       <p>在真正调 LLM 之前，系统会读取这些项目文件：</p>
       <ul>
         <li><code>purpose.md</code></li>
@@ -431,7 +462,7 @@
     </section>
 
     <section class="section">
-      <h2>11. 原始文档如何进入 prompt</h2>
+      <h2>12. 原始文档如何进入 prompt</h2>
       <p>当前实现里，解析出来的原始文本会直接拼进 prompt，但会先做截断：</p>
       <pre><code>max_content_chars = 100_000
 truncated = content[:max_content_chars] if len(content) &gt; max_content_chars else content</code></pre>
@@ -446,7 +477,7 @@ truncated = content[:max_content_chars] if len(content) &gt; max_content_chars e
     </section>
 
     <section class="section">
-      <h2>12. Step 1: Analysis</h2>
+      <h2>13. Step 1: Analysis</h2>
       <p>analysis prompt 在 <code>app/ingest/prompts.py</code> 的 <code>build_analysis_prompt()</code> 中构造。</p>
       <p>输入包括：</p>
       <ul>
@@ -461,7 +492,7 @@ truncated = content[:max_content_chars] if len(content) &gt; max_content_chars e
     </section>
 
     <section class="section">
-      <h2>13. Step 2: Generation</h2>
+      <h2>14. Step 2: Generation</h2>
       <p>generation prompt 在 <code>app/ingest/prompts.py</code> 的 <code>build_generation_prompt()</code>。</p>
       <p>输入包括：</p>
       <ul>
@@ -488,7 +519,7 @@ truncated = content[:max_content_chars] if len(content) &gt; max_content_chars e
     </section>
 
     <section class="section">
-      <h2>14. 解析 LLM 输出</h2>
+      <h2>15. 解析 LLM 输出</h2>
       <p>解析逻辑在 <code>app/ingest/parser.py</code>。</p>
       <ul>
         <li>识别 <code>---FILE: ... ---</code> 和 <code>---END FILE---</code></li>
@@ -502,7 +533,7 @@ truncated = content[:max_content_chars] if len(content) &gt; max_content_chars e
     </section>
 
     <section class="section">
-      <h2>15. 写文件与页面合并</h2>
+      <h2>16. 写文件与页面合并</h2>
       <p>落盘逻辑在 <code>app/ingest/writer.py</code>。</p>
       <ul>
         <li>目标文件不存在时直接写入</li>
@@ -521,10 +552,14 @@ truncated = content[:max_content_chars] if len(content) &gt; max_content_chars e
     </section>
 
     <section class="section">
-      <h2>16. Embedding 阶段</h2>
+      <h2>17. Embedding 阶段</h2>
       <p>写完页面后，<code>auto_ingest()</code> 会调用 <code>embed_pages(project_dir, written)</code>。</p>
       <ul>
         <li>只对本次写入的页面做 embedding</li>
+        <li>连接项目私有的 <code>.llm-wiki/lancedb</code> 向量库</li>
+        <li>表名固定为 <code>wiki_chunks_v2</code></li>
+        <li>如果表已存在，会先按 <code>page_id</code> 删除该页面旧 chunk，再 <code>add(records)</code></li>
+        <li>如果表不存在，会按 schema 创建表并写入 records</li>
         <li>embedding 失败是 non-fatal</li>
         <li>即使 embedding 报错，ingest 仍会完成并更新缓存</li>
       </ul>
@@ -532,7 +567,7 @@ truncated = content[:max_content_chars] if len(content) &gt; max_content_chars e
     </section>
 
     <section class="section">
-      <h2>17. 最终收尾</h2>
+      <h2>18. 最终收尾</h2>
       <p>所有主要步骤成功后，系统会：</p>
       <ol>
         <li>更新 <code>.llm-wiki/ingest-cache.json</code></li>
@@ -549,7 +584,7 @@ truncated = content[:max_content_chars] if len(content) &gt; max_content_chars e
     </section>
 
     <section class="section">
-      <h2>18. 重试和恢复的实际行为</h2>
+      <h2>19. 重试和恢复的实际行为</h2>
       <p>失败自动重试时，队列会读取数据库里的 <code>retry_count</code> 和当前 <code>job.step</code>：</p>
       <ul>
         <li>若未超过 <code>MAX_RETRIES</code>，则状态改回 <code>pending</code></li>
@@ -560,7 +595,7 @@ truncated = content[:max_content_chars] if len(content) &gt; max_content_chars e
     </section>
 
     <section class="section">
-      <h2>19. 当前流程里实际有几次 LLM 调用</h2>
+      <h2>20. 当前流程里实际有几次 LLM 调用</h2>
       <p>单个源文档最常见的情况是 2 次：</p>
       <ol>
         <li>analysis</li>
@@ -570,7 +605,7 @@ truncated = content[:max_content_chars] if len(content) &gt; max_content_chars e
     </section>
 
     <section class="section">
-      <h2>20. 当前流程不是 Agent 的具体原因</h2>
+      <h2>21. 当前流程不是 Agent 的具体原因</h2>
       <p>虽然 <code>app/llm/client.py</code> 里已经有 <code>complete_with_tools()</code>，底层也具备 toolcall 能力，但 ingest 现在没有使用它。</p>
       <ul>
         <li>后端固定写死执行顺序</li>
@@ -582,7 +617,7 @@ truncated = content[:max_content_chars] if len(content) &gt; max_content_chars e
     </section>
 
     <section class="section">
-      <h2>21. 当前实现的主要限制</h2>
+      <h2>22. 当前实现的主要限制</h2>
       <div class="grid">
         <div class="card"><strong>大文档依赖截断</strong>只取前 <code>100000</code> 字符进入 prompt，超出部分直接忽略。</div>
         <div class="card"><strong>analysis 非结构化</strong>step 1 结果不是严格 schema 化的 facts。</div>
@@ -593,10 +628,13 @@ truncated = content[:max_content_chars] if len(content) &gt; max_content_chars e
     </section>
 
     <section class="section">
-      <h2>22. 一次完整编译的时序图</h2>
+      <h2>23. 一次完整编译的时序图</h2>
       <pre><code>User/API
   -&gt; ingest router
+     -&gt; SQL: check ProjectMember / Project
   -&gt; ingest queue
+     -&gt; SQL: insert ingest_jobs(status=pending)
+     -&gt; SQL: update ingest_jobs(status=processing, progress)
   -&gt; auto_ingest()
      -&gt; parse_document()
      -&gt; check_cache()
@@ -605,19 +643,23 @@ truncated = content[:max_content_chars] if len(content) &gt; max_content_chars e
      -&gt; truncate source text
      -&gt; LLM analysis
      -&gt; save checkpoint(step=1)
+     -&gt; SQL: update ingest_jobs(step=1)
      -&gt; LLM generation
      -&gt; save checkpoint(step=2)
+     -&gt; SQL: update ingest_jobs(step=2)
      -&gt; parse FILE blocks
      -&gt; write_file_blocks()
         -&gt; optional LLM merge for existing pages
+     -&gt; SQL: update ingest_jobs(step=3)
      -&gt; embed_pages()
+        -&gt; LanceDB: delete old page chunks + add new vectors
      -&gt; update_cache()
      -&gt; remove_checkpoint()
-  -&gt; update ingest_jobs(status=done)</code></pre>
+  -&gt; SQL: update ingest_jobs(status=done, files_written, completed_at)</code></pre>
     </section>
 
     <section class="section">
-      <h2>23. 如果你要继续优化 ingest，应该先看哪里</h2>
+      <h2>24. 如果你要继续优化 ingest，应该先看哪里</h2>
       <ol>
         <li><code>app/ingest/pipeline.py</code>：决定主流程、截断方式、checkpoint 和上下文装配</li>
         <li><code>app/ingest/prompts.py</code>：决定 analysis / generation / merge 的行为边界</li>
@@ -628,13 +670,15 @@ truncated = content[:max_content_chars] if len(content) &gt; max_content_chars e
     </section>
 
     <section class="section">
-      <h2>24. 简短总结</h2>
+      <h2>25. 简短总结</h2>
       <ul>
         <li>它不是 Agent</li>
         <li>它是固定的两阶段 LLM 编译流水线</li>
         <li>原始文档文本会直接进入 prompt，但最多只取前 <code>100000</code> 字符</li>
         <li>输出必须是严格的 FILE block</li>
         <li>已有页面会在写盘阶段再次做 LLM merge</li>
+        <li>SQL 业务库只保存项目、权限和 job 状态，不保存 wiki 正文</li>
+        <li>LanceDB 只在 embedding 阶段被写入，用于后续向量检索</li>
         <li>队列支持同项目串行、失败重试、服务重启恢复</li>
       </ul>
       <p>如果后续要把 ingest 改成 Agent 或 toolcall 架构，这份文档描述的就是当前基线行为。</p>

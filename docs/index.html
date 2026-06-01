@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LLM Wiki Engine Docs</title>
+  <style>
+    :root {
+      --bg: #f6f1e8;
+      --panel: #fffaf2;
+      --text: #2f2418;
+      --muted: #6c5a46;
+      --line: #e2d2bc;
+      --accent: #d46b08;
+      --shadow: 0 18px 40px rgba(92, 62, 29, 0.08);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Noto Serif SC", "Source Han Serif SC", "Songti SC", serif;
+      background: linear-gradient(180deg, #fbf7f0 0%, var(--bg) 100%);
+      color: var(--text);
+      line-height: 1.7;
+    }
+    .page { width: min(1120px, calc(100vw - 32px)); margin: 32px auto 56px; }
+    .hero, .section {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      box-shadow: var(--shadow);
+      padding: 28px 30px;
+      margin-top: 22px;
+    }
+    .eyebrow {
+      display: inline-block;
+      padding: 6px 12px;
+      border-radius: 999px;
+      background: #fff1df;
+      color: var(--accent);
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      margin-bottom: 14px;
+    }
+    h1, h2 { margin: 0 0 14px; line-height: 1.25; }
+    h1 { font-size: clamp(32px, 4vw, 48px); }
+    h2 { font-size: 26px; }
+    p { margin: 0 0 14px; color: var(--muted); }
+    ul { margin: 0; padding-left: 22px; }
+    li { margin-bottom: 10px; }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 16px;
+      margin-top: 18px;
+    }
+    .card {
+      background: #fffdf8;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 16px 18px;
+    }
+    .card strong { display: block; margin-bottom: 8px; color: var(--accent); }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <section class="hero">
+      <div class="eyebrow">LLM Wiki Engine Docs</div>
+      <h1>维护者手册索引</h1>
+      <p>这里整理的是当前 <code>llm-wiki-engine</code> 里值得长期维护的内部实现文档。重点不是 API 用法，而是帮助维护者快速理解系统的运行链路、项目目录、关键数据结构、检索与 Agent 机制，以及反馈修复闭环。</p>
+    </section>
+
+    <section class="section">
+      <h2>推荐阅读顺序</h2>
+      <ul>
+        <li>第一次接手 engine：先看 <a href="./engine-runtime-overview.html">Engine Runtime Overview</a>，再看 <a href="./project-disk-layout.html">Project Disk Layout</a>。</li>
+        <li>想理解问答链路：再看 <a href="./chat-and-agent-runtime.html">Chat And Agent Runtime</a>。</li>
+        <li>想理解数据从哪来：看 <a href="./ingest-compile-pipeline.html">Ingest Compile Pipeline</a>、<a href="./search-and-retrieval.html">Search And Retrieval</a>、<a href="./knowledge-graph-generation.html">Knowledge Graph Generation</a>。</li>
+        <li>想理解 Agent 和反馈闭环：看 <a href="./agent-tool-runtime.html">Agent Tool Runtime</a>、<a href="./feedback-repair-loop.html">Feedback Repair Loop</a>。</li>
+        <li>想改线上配置或排查模型差异：看 <a href="./config-and-admin-settings.html">Config And Admin Settings</a>。</li>
+      </ul>
+    </section>
+
+    <section class="section">
+      <h2>总览与核心链路</h2>
+      <div class="grid">
+        <div class="card">
+          <strong><a href="./engine-runtime-overview.html">Engine Runtime Overview</a></strong>
+          从 FastAPI 启动、项目、文档、ingest、wiki、search、chat、agent、feedback 这几个模块整体说明系统是怎么跑起来的。
+        </div>
+        <div class="card">
+          <strong><a href="./chat-and-agent-runtime.html">Chat And Agent Runtime</a></strong>
+          解释普通项目 chat 和 Agent chat 的差异：一个是预拼上下文 RAG，一个是 toolcall orchestrator。
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2>项目结构与数据模型</h2>
+      <div class="grid">
+        <div class="card">
+          <strong><a href="./project-disk-layout.html">Project Disk Layout</a></strong>
+          解释项目目录里 <code>raw/</code>、<code>wiki/</code>、<code>.llm-wiki/</code> 等目录和文件各自承担什么职责。
+        </div>
+        <div class="card">
+          <strong><a href="./core-data-models.html">Core Data Models</a></strong>
+          解释数据库层面的核心模型：Project、Agent、AgentProject、IngestJob、FeedbackTask。
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2>专题机制</h2>
+      <div class="grid">
+        <div class="card">
+          <strong><a href="./search-and-retrieval.html">Search And Retrieval</a></strong>
+          解释 BM25、向量检索、RRF 融合、图谱扩展与普通 chat 的 RAG 组合方式。
+        </div>
+        <div class="card">
+          <strong><a href="./agent-tool-runtime.html">Agent Tool Runtime</a></strong>
+          解释 Agent 的工具集合、tool context、orchestrator 循环与调试轨迹。
+        </div>
+        <div class="card">
+          <strong><a href="./feedback-repair-loop.html">Feedback Repair Loop</a></strong>
+          解释回答后异步 feedback queue、评估、重编译与人工 guidance。
+        </div>
+        <div class="card">
+          <strong><a href="./config-and-admin-settings.html">Config And Admin Settings</a></strong>
+          解释配置加载优先级、管理员设置如何覆盖 YAML/环境变量，以及 feedback 模型配置。
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2>已有专题</h2>
+      <div class="grid">
+        <div class="card">
+          <strong><a href="./ingest-compile-pipeline.html">Ingest Compile Pipeline</a></strong>
+          详细解释当前 wiki 编译流水线。
+        </div>
+        <div class="card">
+          <strong><a href="./knowledge-graph-generation.html">Knowledge Graph Generation</a></strong>
+          详细解释知识图谱如何从 wiki markdown 动态生成。
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2>维护建议</h2>
+      <ul>
+        <li>改动某个模块时，优先同步更新对应专题文档，而不是只改总览页。</li>
+        <li>如果一个机制已经复杂到需要在代码评审里反复解释，就值得单独补进 <code>docs/</code>。</li>
+        <li>总览页只负责导航和阅读顺序，不承担所有实现细节。</li>
+      </ul>
+    </section>
+  </main>
+</body>
+</html>
