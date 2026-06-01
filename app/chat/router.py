@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from datetime import datetime, timezone
@@ -13,9 +14,9 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import StreamingResponse
 
+from app.agents import service as agent_service
 from app.auth.deps import get_current_user
 from app.auth.models import User
-from app.chat.rag import chat_rag
 from app.database import get_db
 from app.projects.service import check_membership, get_project_or_404
 
@@ -92,50 +93,74 @@ async def chat(
         if m["role"] in ("user", "assistant")
     ]
 
-    collected_tokens: list[str] = []
-
     async def sse_stream():
-        async for token in chat_rag(
-            project.disk_path,
+        collected_tokens: list[str] = []
+        collected_traces: list[dict] = []
+        persisted = False
+
+        async def persist_messages() -> None:
+            nonlocal persisted
+            if persisted:
+                return
+            persisted = True
+            assistant_response = "".join(collected_tokens)
+
+            history.append({
+                "role": "user",
+                "content": body.message,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            })
+            history.append({
+                "role": "assistant",
+                "content": assistant_response,
+                "rawContent": assistant_response,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            })
+            await _save_messages(project.disk_path, conv_id, history)
+
+            convs = await _load_conversations(project.disk_path)
+            existing = next((c for c in convs if c["id"] == conv_id), None)
+            if existing:
+                existing["message_count"] = len(history)
+            else:
+                convs.append({
+                    "id": conv_id,
+                    "title": body.message[:80],
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "message_count": len(history),
+                    "user_id": user.id,
+                })
+            await _save_conversations(project.disk_path, convs)
+
+        async for event in agent_service.agent_toolcall_chat(
+            db,
+            [project],
             body.message,
             llm_history,
-            conversation_id=conv_id,
+            "",
         ):
-            collected_tokens.append(token)
-            yield f"data: {json.dumps({'token': token})}\n\n"
+            payload = json.loads(event)
+            if "token" in payload:
+                collected_tokens.append(payload["token"])
+            if payload.get("done"):
+                collected_traces[:] = payload.get("tool_traces", [])
+                await persist_messages()
+                payload["conversation_id"] = conv_id
+            yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
-        assistant_response = "".join(collected_tokens)
-
-        # Persist messages
-        history.append({
-            "role": "user",
-            "content": body.message,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        })
-        history.append({
-            "role": "assistant",
-            "content": assistant_response,
-            "rawContent": assistant_response,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        })
-        await _save_messages(project.disk_path, conv_id, history)
-
-        # Update conversation list
-        convs = await _load_conversations(project.disk_path)
-        existing = next((c for c in convs if c["id"] == conv_id), None)
-        if existing:
-            existing["message_count"] = len(history)
-        else:
-            convs.append({
-                "id": conv_id,
-                "title": body.message[:80],
-                "created_at": datetime.now(timezone.utc).isoformat(),
-                "message_count": len(history),
-                "user_id": user.id,
-            })
-        await _save_conversations(project.disk_path, convs)
-
-        yield f"data: {json.dumps({'done': True, 'conversation_id': conv_id})}\n\n"
+        await persist_messages()
+        if collected_traces:
+            from app.feedback.queue import maybe_trigger_feedback
+            asyncio.create_task(
+                maybe_trigger_feedback(
+                    project_id=project.id,
+                    conversation_id=conv_id,
+                    agent_id=None,
+                    user_message=body.message,
+                    assistant_answer="".join(collected_tokens),
+                    tool_traces=collected_traces,
+                )
+            )
 
     return StreamingResponse(sse_stream(), media_type="text/event-stream")
 
