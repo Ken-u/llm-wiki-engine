@@ -7,8 +7,15 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.deps import create_access_token, get_current_user, hash_password, verify_password
-from app.auth.models import User
+from app.auth.deps import (
+    create_access_token,
+    generate_api_token,
+    get_current_user,
+    hash_api_token,
+    hash_password,
+    verify_password,
+)
+from app.auth.models import User, UserApiToken
 from app.config import get_config
 from app.database import get_db
 
@@ -39,6 +46,16 @@ class UserResponse(BaseModel):
         from_attributes = True
 
 
+class ApiTokenStatusResponse(BaseModel):
+    exists: bool
+    created_at: str | None = None
+    last_used_at: str | None = None
+
+
+class ApiTokenResponse(ApiTokenStatusResponse):
+    api_token: str
+
+
 @router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
 async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db)):
     if not get_config().auth.allow_registration:
@@ -66,3 +83,41 @@ async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)):
 @router.get("/me", response_model=UserResponse)
 async def me(user: User = Depends(get_current_user)):
     return user
+
+
+@router.get("/api-token", response_model=ApiTokenStatusResponse)
+async def get_api_token_status(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    token = (await db.execute(select(UserApiToken).where(UserApiToken.user_id == user.id))).scalar_one_or_none()
+    if token is None:
+        return ApiTokenStatusResponse(exists=False)
+    return ApiTokenStatusResponse(
+        exists=True,
+        created_at=token.created_at.isoformat() if token.created_at else None,
+        last_used_at=token.last_used_at.isoformat() if token.last_used_at else None,
+    )
+
+
+@router.post("/api-token/regenerate", response_model=ApiTokenResponse)
+async def regenerate_api_token(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    raw_token = generate_api_token()
+    token = (await db.execute(select(UserApiToken).where(UserApiToken.user_id == user.id))).scalar_one_or_none()
+    if token is None:
+        token = UserApiToken(user_id=user.id, token_hash=hash_api_token(raw_token))
+        db.add(token)
+    else:
+        token.token_hash = hash_api_token(raw_token)
+        token.last_used_at = None
+    await db.commit()
+    await db.refresh(token)
+    return ApiTokenResponse(
+        exists=True,
+        api_token=raw_token,
+        created_at=token.created_at.isoformat() if token.created_at else None,
+        last_used_at=token.last_used_at.isoformat() if token.last_used_at else None,
+    )

@@ -24,7 +24,7 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 
 
 async def init_db() -> None:
-    from app.auth.models import User  # noqa: F401
+    from app.auth.models import User, UserApiToken  # noqa: F401
     from app.ingest.models import IngestJob  # noqa: F401
     from app.projects.models import Project, ProjectMember  # noqa: F401
     from app.agents.models import Agent, AgentProject  # noqa: F401
