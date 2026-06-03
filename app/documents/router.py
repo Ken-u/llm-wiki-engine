@@ -1,8 +1,9 @@
-"""Document upload/list endpoints."""
+"""Document upload/list/read endpoints."""
 
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, File, UploadFile, HTTPException, status
+from fastapi.responses import PlainTextResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.deps import get_current_user
@@ -44,3 +45,19 @@ async def list_documents(
     await check_membership(db, project_id, user)
     project = await get_project_or_404(db, project_id)
     return service.list_documents(project)
+
+
+@router.get("/content/{doc_path:path}")
+async def read_document_content(
+    project_id: str,
+    doc_path: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Read a document's text content for preview."""
+    await check_membership(db, project_id, user)
+    project = await get_project_or_404(db, project_id)
+    content = service.read_document_content(project, doc_path)
+    if content is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Document not found")
+    return PlainTextResponse(content)
