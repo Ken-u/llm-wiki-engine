@@ -34,6 +34,17 @@ class ProjectResponse(BaseModel):
     ticket_project_id: str | None = None
     ticket_project_name: str | None = None
     feedback_enabled: bool = True
+    git_repo_url: str = ""
+    git_branch: str = "main"
+    git_username: str = ""
+    git_author_name: str = ""
+    git_author_email: str = ""
+    git_sync_enabled: bool = False
+    git_sync_time: str = "02:00"
+    git_auth_configured: bool = False
+    last_git_sync_at: datetime | None = None
+    last_git_sync_status: str = "idle"
+    last_git_sync_error: str = ""
 
     class Config:
         from_attributes = True
@@ -44,6 +55,15 @@ class UpdateProjectRequest(BaseModel):
     description: str | None = None
     ticket_project_id: str | None = None
     feedback_enabled: bool | None = None
+    git_repo_url: str | None = None
+    git_branch: str | None = None
+    git_username: str | None = None
+    git_auth_token: str | None = None
+    clear_git_auth_token: bool | None = None
+    git_author_name: str | None = None
+    git_author_email: str | None = None
+    git_sync_enabled: bool | None = None
+    git_sync_time: str | None = None
 
 
 class AddMemberRequest(BaseModel):
@@ -77,6 +97,17 @@ async def _build_project_response(db: AsyncSession, proj: Project) -> ProjectRes
         ticket_project_id=proj.ticket_project_id,
         ticket_project_name=ticket_name,
         feedback_enabled=proj.feedback_enabled,
+        git_repo_url=proj.git_repo_url,
+        git_branch=proj.git_branch,
+        git_username=proj.git_username,
+        git_author_name=proj.git_author_name,
+        git_author_email=proj.git_author_email,
+        git_sync_enabled=proj.git_sync_enabled,
+        git_sync_time=proj.git_sync_time,
+        git_auth_configured=bool(proj.git_auth_token),
+        last_git_sync_at=proj.last_git_sync_at,
+        last_git_sync_status=proj.last_git_sync_status,
+        last_git_sync_error=proj.last_git_sync_error,
     )
 
 
@@ -132,7 +163,23 @@ async def update_project(
     if "feedback_enabled" in body.model_fields_set:
         kwargs["feedback_enabled"] = body.feedback_enabled
 
+    git_fields = ["git_repo_url", "git_branch", "git_username", "git_author_name", "git_author_email", "git_sync_enabled", "git_sync_time"]
+    for field in git_fields:
+        if field in body.model_fields_set:
+            kwargs[field] = getattr(body, field)
+    if "git_auth_token" in body.model_fields_set and body.git_auth_token:
+        kwargs["git_auth_token"] = body.git_auth_token
+    if "clear_git_auth_token" in body.model_fields_set and body.clear_git_auth_token:
+        kwargs["git_auth_token"] = ""
+
     proj = await service.update_project(db, proj, **kwargs)
+
+    git_schedule_fields = {"git_sync_enabled", "git_sync_time"}
+    if git_schedule_fields & body.model_fields_set:
+        from app.projects.git_sync import register_sync_jobs
+        import asyncio
+        asyncio.create_task(register_sync_jobs())
+
     return await _build_project_response(db, proj)
 
 
@@ -168,3 +215,50 @@ async def list_members(
     await service.check_membership(db, project_id, user)
     stmt = select(ProjectMember).where(ProjectMember.project_id == project_id)
     return list((await db.execute(stmt)).scalars().all())
+
+
+@router.post("/{project_id}/git/test")
+async def test_git_connection(
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await service.check_membership(db, project_id, user, require="owner")
+    proj = await service.get_project_or_404(db, project_id)
+    from app.projects.git_sync import test_project_git_connection
+    return await test_project_git_connection(proj)
+
+
+@router.post("/{project_id}/git/sync")
+async def trigger_git_sync(
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    import asyncio
+    await service.check_membership(db, project_id, user)
+    proj = await service.get_project_or_404(db, project_id)
+    if not proj.git_repo_url:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "未配置 Git 仓库")
+    from app.projects.git_sync import sync_project_from_git, _get_sync_lock
+    lock = _get_sync_lock(project_id)
+    if lock.locked():
+        raise HTTPException(status.HTTP_409_CONFLICT, "该项目已有同步正在执行")
+    asyncio.create_task(sync_project_from_git(project_id, triggered_by=user.id, source="manual"))
+    return {"status": "started"}
+
+
+@router.get("/{project_id}/git/status")
+async def get_git_sync_status(
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await service.check_membership(db, project_id, user)
+    proj = await service.get_project_or_404(db, project_id)
+    return {
+        "git_sync_enabled": proj.git_sync_enabled,
+        "last_git_sync_at": proj.last_git_sync_at.isoformat() if proj.last_git_sync_at else None,
+        "last_git_sync_status": proj.last_git_sync_status,
+        "last_git_sync_error": proj.last_git_sync_error,
+    }

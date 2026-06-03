@@ -144,6 +144,14 @@ async def update_project(
     description: str | None = None,
     ticket_project_id: str | None = ...,
     feedback_enabled: bool | None = None,
+    git_repo_url: str | None = None,
+    git_branch: str | None = None,
+    git_username: str | None = None,
+    git_auth_token: str | None = None,
+    git_author_name: str | None = None,
+    git_author_email: str | None = None,
+    git_sync_enabled: bool | None = None,
+    git_sync_time: str | None = None,
 ) -> Project:
     """Update project fields. Pass ticket_project_id=None to clear binding."""
     if name is not None:
@@ -163,6 +171,20 @@ async def update_project(
             if target.ticket_project_id is not None:
                 raise HTTPException(status.HTTP_400_BAD_REQUEST, "Ticket project cannot itself have a ticket binding (no recursive chains)")
         project.ticket_project_id = ticket_project_id
+
+    git_simple_fields = {
+        "git_repo_url": git_repo_url,
+        "git_branch": git_branch,
+        "git_username": git_username,
+        "git_auth_token": git_auth_token,
+        "git_author_name": git_author_name,
+        "git_author_email": git_author_email,
+        "git_sync_enabled": git_sync_enabled,
+        "git_sync_time": git_sync_time,
+    }
+    for field_name, value in git_simple_fields.items():
+        if value is not None:
+            setattr(project, field_name, value)
 
     await db.commit()
     await db.refresh(project)

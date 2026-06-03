@@ -21,7 +21,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     if recovered:
         import logging
         logging.getLogger(__name__).info("Recovered %d interrupted ingest jobs", recovered)
+
+    from app.projects.git_sync import start_sync_scheduler, stop_sync_scheduler
+    start_sync_scheduler()
+
     yield
+
+    stop_sync_scheduler()
     ingest_queue.stop()
 
 

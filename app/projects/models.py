@@ -25,6 +25,18 @@ class Project(Base):
     )
     feedback_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
 
+    git_repo_url: Mapped[str] = mapped_column(String(512), default="")
+    git_branch: Mapped[str] = mapped_column(String(128), default="main")
+    git_username: Mapped[str] = mapped_column(String(128), default="")
+    git_auth_token: Mapped[str] = mapped_column(String(512), default="")
+    git_author_name: Mapped[str] = mapped_column(String(128), default="")
+    git_author_email: Mapped[str] = mapped_column(String(256), default="")
+    git_sync_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    git_sync_time: Mapped[str] = mapped_column(String(8), default="02:00")
+    last_git_sync_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
+    last_git_sync_status: Mapped[str] = mapped_column(String(16), default="idle")
+    last_git_sync_error: Mapped[str] = mapped_column(Text, default="")
+
 
 class ProjectMember(Base):
     __tablename__ = "project_members"

@@ -99,6 +99,17 @@ async def _auto_migrate(conn) -> None:
         ("agents", "max_tool_calls", "INTEGER DEFAULT 20"),
         ("agents", "debug_result_limit", "INTEGER DEFAULT 2000"),
         ("agents", "tool_labels", "TEXT DEFAULT '{}'"),
+        ("projects", "git_repo_url", "TEXT DEFAULT ''"),
+        ("projects", "git_branch", "TEXT DEFAULT 'main'"),
+        ("projects", "git_username", "TEXT DEFAULT ''"),
+        ("projects", "git_auth_token", "TEXT DEFAULT ''"),
+        ("projects", "git_author_name", "TEXT DEFAULT ''"),
+        ("projects", "git_author_email", "TEXT DEFAULT ''"),
+        ("projects", "git_sync_enabled", "BOOLEAN DEFAULT 0"),
+        ("projects", "git_sync_time", "TEXT DEFAULT '02:00'"),
+        ("projects", "last_git_sync_at", "DATETIME DEFAULT NULL"),
+        ("projects", "last_git_sync_status", "TEXT DEFAULT 'idle'"),
+        ("projects", "last_git_sync_error", "TEXT DEFAULT ''"),
     ]
 
     for table, column, col_type in migrations:
