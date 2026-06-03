@@ -2,17 +2,21 @@
 
 纯后端 LLM 知识编译引擎 — **Compile-time Knowledge Synthesis**。
 
-不同于传统 RAG（chunk → embedding → 检索原文），本引擎先将原始文档通过 LLM **两步编译** 为结构化 Markdown 知识单元（entity / concept / source summary），再基于高质量知识页面提供检索与问答 API。
+不同于传统 RAG（chunk → embedding → 检索原文），本引擎先将原始文档通过 LLM **两步编译** 为结构化 Markdown 知识单元（entity / concept / source summary），再基于高质量知识页面提供检索、问答、Agent 与反馈修正 API。
+
+> 完整栈（UI + Case Service）请使用仓库根目录的 `docker-compose.yml` 或 `./start-dev.sh`。本文档侧重 **单独运行 engine** 或 API 集成。
 
 ## 核心能力
 
-- **两步 CoT Ingest** — Analysis → Generation → FILE 块解析 → LLM 辅助页面合并 → SHA256 增量缓存 → 步骤级 checkpoint 断点恢复
-- **混合搜索** — BM25 关键词 + LanceDB 向量 + RRF 融合（含文件名 / 标题加分）
-- **RAG Chat (SSE)** — 4 阶段检索管线：混合搜索 → 知识图谱 1-hop 扩展 → 上下文预算分配 → 流式响应
-- **多项目隔离** — 每项目独立文件系统 + LanceDB 向量库，per-project asyncio.Lock 串行保护 ingest
-- **多用户** — JWT 认证 + 项目成员角色（owner / editor / viewer）
-- **文档解析** — PDF (PyMuPDF) / DOCX / XLSX / TXT / Markdown / CSV / JSON / YAML
-- **LLM 统一接口** — 通过 LiteLLM 支持 OpenAI / Anthropic / Ollama / Azure / 100+ provider
+- **两步 CoT Ingest** — Analysis → Generation → FILE 块解析 → LLM 辅助页面合并 → SHA256 增量缓存 → 步骤级 checkpoint
+- **Git 仓库同步** — 项目级绑定远端仓库；拉取 `raw/sources/` → 编译 → 提交推送 `raw/` + `wiki/`；APScheduler 每日定时
+- **混合搜索** — BM25 + LanceDB 向量 + RRF 融合
+- **RAG Chat (SSE)** — 混合搜索 → 图谱 1-hop 扩展 → 流式响应
+- **反馈修正** — 对话质量评估 → 编译修复候选 → 人工审核 → 写回 Wiki（含本地 Git 快照回滚）
+- **多项目隔离** — 独立 `disk_path` + LanceDB；per-project ingest / git sync 串行锁
+- **多用户** — JWT + 项目成员角色；用户 API Token
+- **自定义 Agent** — 多项目绑定、工具调用、公开 Chat 端点
+- **文档** — 多格式解析；`raw/sources/` 递归列表与内容预览 API
 
 ## 快速开始
 
@@ -20,87 +24,67 @@
 
 - Python >= 3.10
 - [uv](https://docs.astral.sh/uv/)（推荐）或 pip
-- 一个 LLM API Key（OpenAI / 兼容接口 / Ollama 本地）
+- LLM API Key（OpenAI 兼容 / Ollama 等）
+- **Git CLI**（Git 同步与 feedback 写盘快照需要）
 
-### 方式一：本地开发（uv）
+### 本地开发（推荐从仓库根目录）
 
 ```bash
-# 克隆并进入目录
-cd llm-wiki-engine
+# 在 llmwiki 根目录
+./start-dev.sh
+```
 
-# 安装依赖
+Engine 会使用 `data/wiki` 与 `data/engine-db/engine.db`。
+
+### 仅启动 engine（本子目录）
+
+```bash
+cd llm-wiki-engine
 uv sync
+cp .env.example .env   # 可选，根目录 .env 亦可
 
-# 复制并编辑环境变量
-cp .env.example .env
-# 编辑 .env 填入你的 API Key
+# 建议指定数据目录（与 monorepo 一致）
+export PROJECTS_DIR=../data/wiki
+export DATABASE_URL=sqlite+aiosqlite:///$(pwd)/../data/engine-db/engine.db
+mkdir -p ../data/wiki ../data/engine-db
 
-# 启动开发服务器
-uv run uvicorn app.main:app --reload --port 8000
+uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-服务启动后访问：
-- API 文档：http://localhost:8000/docs
-- 健康检查：http://localhost:8000/health
+- API 文档：http://localhost:8000/docs  
+- 健康检查：http://localhost:8000/health  
 
-### 方式二：pip 安装
+### Docker（单服务，开发用）
+
+本子目录含独立 `docker-compose.yml`，仅启动 engine，数据卷为 `./projects`：
 
 ```bash
 cd llm-wiki-engine
-
-# 创建虚拟环境（可选但推荐）
-python3 -m venv .venv
-source .venv/bin/activate
-
-# 安装
-pip install -e .
-
-# 安装开发依赖（可选，用于测试和 lint）
-pip install -e ".[dev]"
-
-# 复制并编辑环境变量
 cp .env.example .env
-
-# 启动
-uvicorn app.main:app --reload --port 8000
-```
-
-### 方式三：Docker
-
-```bash
-cd llm-wiki-engine
-
-# 复制并编辑环境变量
-cp .env.example .env
-
-# 构建并启动
 docker compose up -d
-
-# 查看日志
-docker compose logs -f
 ```
+
+生产/联调请用**根目录** `docker compose`（含 UI、持久化 `data/`）。
 
 ## 配置
 
-所有配置集中在 `config.yaml`，环境变量优先级更高：
-
 | 环境变量 | 说明 | 默认值 |
 |----------|------|--------|
-| `LLM_API_KEY` | LLM 服务 API Key | （空） |
-| `EMBEDDING_API_KEY` | Embedding 服务 API Key | （空） |
+| `LLM_API_KEY` | LLM API Key | （空） |
+| `EMBEDDING_API_KEY` | Embedding API Key | （空） |
 | `JWT_SECRET` | JWT 签名密钥 | `change-me-in-production` |
-| `ADMIN_PASSWORD` | 管理员 admin 账户密码 | `admin` |
-| `PROJECTS_DIR` | 项目数据存储目录 | `./projects` |
+| `ADMIN_PASSWORD` | 管理员密码 | `admin` |
+| `PROJECTS_DIR` | 项目磁盘根目录 | `./projects`（config 默认） |
+| `DATABASE_URL` | SQLite 连接串 | `sqlite+aiosqlite:///./data/engine.db` |
+| `CONFIG_PATH` | `config.yaml` 路径 | 可选 |
 
-`config.yaml` 支持更细粒度的配置：
+`config.yaml` 示例：
 
 ```yaml
 llm:
-  provider: "openai"       # litellm 支持的任何 provider
-  model: "gpt-4o-mini"     # 模型名称
-  api_base: null            # 自定义端点（Ollama: http://localhost:11434）
-  max_context_size: 128000
-  stream: false              # LLM 编译请求是否使用流式传输（默认 false，Chat 始终流式）
+  provider: "openai"
+  model: "gpt-4o-mini"
+  api_base: null
 
 embedding:
   enabled: true
@@ -109,158 +93,135 @@ embedding:
   dimensions: 1536
 ```
 
-**使用 Ollama 本地模型示例：**
-
-```yaml
-llm:
-  provider: "ollama"
-  model: "qwen2.5:14b"
-  api_base: "http://localhost:11434"
-
-embedding:
-  provider: "ollama"
-  model: "nomic-embed-text"
-  api_base: "http://localhost:11434"
-  dimensions: 768
-```
+Ollama 本地示例见原 `config.yaml` 注释；Admin API 可将部分配置写入 DB 覆盖 YAML。
 
 ## API 概览
 
 ### 认证
 
 ```
-POST /api/auth/register     注册用户
-POST /api/auth/login        登录，返回 JWT
-GET  /api/auth/me           当前用户信息
+POST /api/auth/register
+POST /api/auth/login
+GET  /api/auth/me
+GET  /api/auth/api-token
+POST /api/auth/api-token/regenerate
 ```
 
-### 项目管理
+### 项目
 
 ```
-POST   /api/projects                        创建项目
-GET    /api/projects                        我的项目列表
-GET    /api/projects/{id}                   项目详情
-DELETE /api/projects/{id}                   删除项目
-POST   /api/projects/{id}/members           添加成员
-GET    /api/projects/{id}/members           成员列表
+POST   /api/projects
+GET    /api/projects
+GET    /api/projects/{id}
+PATCH  /api/projects/{id}          # 含 Git 同步字段、案例库绑定、反馈开关
+DELETE /api/projects/{id}
+POST   /api/projects/{id}/members
+GET    /api/projects/{id}/members
 ```
 
-### 文档上传
+### Git 同步（项目级）
 
 ```
-POST /api/projects/{id}/documents/upload    上传文档（multipart, ≤50MB）
-GET  /api/projects/{id}/documents           文档列表
+POST /api/projects/{id}/git/test     # 测试仓库连接（owner）
+POST /api/projects/{id}/git/sync     # 立即同步（成员）
+GET  /api/projects/{id}/git/status   # 最近同步状态
+```
+
+`PATCH` 项目时可设置：`git_repo_url`、`git_branch`、`git_username`、`git_auth_token`（只写）、`clear_git_auth_token`、`git_sync_enabled`、`git_sync_time` 等。响应含 `git_auth_configured`，不返回 token 明文。
+
+### 文档
+
+```
+POST /api/projects/{id}/documents/upload
+GET  /api/projects/{id}/documents              # 递归列出 raw/sources/
+GET  /api/projects/{id}/documents/content/{path} # 预览正文（PlainText）
 ```
 
 ### 编译（Ingest）
 
 ```
-POST /api/projects/{id}/ingest              触发编译（单文件或全量）
-GET  /api/projects/{id}/ingest/status       进行中的任务
-GET  /api/projects/{id}/ingest/history      编译历史
+POST   /api/projects/{id}/ingest
+POST   /api/projects/{id}/ingest/{job_id}/retry
+GET    /api/projects/{id}/ingest/status
+GET    /api/projects/{id}/ingest/history
+DELETE /api/projects/{id}/ingest/{job_id}
 ```
 
-### 知识库（Wiki）
+### Wiki / 搜索 / Chat
 
 ```
-GET  /api/projects/{id}/wiki                文件树
-GET  /api/projects/{id}/wiki/overview       全局概览
-GET  /api/projects/{id}/wiki/graph          知识图谱 JSON
-GET  /api/projects/{id}/wiki/{path}         读取页面
-PUT  /api/projects/{id}/wiki/{path}         编辑页面
-```
-
-### 搜索
-
-```
+GET  /api/projects/{id}/wiki
+GET  /api/projects/{id}/wiki/overview
+GET  /api/projects/{id}/wiki/graph
+GET  /api/projects/{id}/wiki/{path}
+PUT  /api/projects/{id}/wiki/{path}
 POST /api/projects/{id}/search
-Body: { "query": "...", "top_k": 10, "mode": "hybrid|keyword|vector" }
+POST /api/projects/{id}/chat              # SSE
+GET  /api/projects/{id}/conversations
 ```
 
-### Chat 问答（SSE 流式）
+### 反馈
 
 ```
-POST /api/projects/{id}/chat
-Body: { "message": "...", "conversation_id": "..." }
-SSE:  data: {"token": "..."}  →  data: {"done": true, "conversation_id": "..."}
+GET  /api/projects/{id}/feedback
+POST /api/projects/{id}/feedback/{task_id}/review
+POST /api/projects/{id}/feedback/{task_id}/apply
+...
+```
 
-GET  /api/projects/{id}/conversations       对话列表
-GET  /api/projects/{id}/conversations/{cid} 对话历史
+### Agent / Admin
+
+```
+/api/agents/...
+/api/public/agents/{id}/chat    # 公开 SSE
+/api/admin/...                  # 系统配置（admin）
+```
+
+## 项目磁盘布局
+
+每个项目在 `PROJECTS_DIR/<uuid>/`：
+
+```
+purpose.md
+raw/sources/          # 原始文档（上传 / Git 同步）
+wiki/                 # 编译产物
+.llm-wiki/            # ingest-cache、LanceDB、checkpoints 等
 ```
 
 ## 测试
 
 ```bash
-# 使用 uv
-uv run pytest
-
-# 使用 pip
-pytest
-```
-
-### 快速冒烟测试
-
-```bash
-# 启动服务后：
-
-# 注册
-curl -X POST http://localhost:8000/api/auth/register \
-  -H 'Content-Type: application/json' \
-  -d '{"username":"demo","password":"demo123"}'
-
-# 用返回的 token 创建项目
-TOKEN="<access_token>"
-curl -X POST http://localhost:8000/api/projects \
-  -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{"name":"My Wiki","slug":"my-wiki","description":"测试项目"}'
-
-# 上传文档
-PROJECT_ID="<project_id>"
-curl -X POST "http://localhost:8000/api/projects/$PROJECT_ID/documents/upload" \
-  -H "Authorization: Bearer $TOKEN" \
-  -F "file=@./your-document.pdf"
-
-# 触发编译
-curl -X POST "http://localhost:8000/api/projects/$PROJECT_ID/ingest" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' -d '{}'
-
-# 搜索
-curl -X POST "http://localhost:8000/api/projects/$PROJECT_ID/search" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{"query":"你的查询"}'
-
-# Chat（SSE 流式）
-curl -N -X POST "http://localhost:8000/api/projects/$PROJECT_ID/chat" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{"message":"介绍一下这个知识库的内容"}'
+cd llm-wiki-engine
+uv sync
+uv pip install pytest pytest-asyncio   # 若 venv 未带 dev 依赖
+uv run pytest -v
 ```
 
 ## 项目结构
 
 ```
 llm-wiki-engine/
-├── pyproject.toml          # 依赖与构建配置
-├── config.yaml             # 运行时配置
+├── pyproject.toml
+├── config.yaml
 ├── Dockerfile
-├── docker-compose.yml
+├── docker-compose.yml      # 仅 engine 单服务
 ├── .env.example
 └── app/
-    ├── main.py             # FastAPI 入口 + 路由注册
-    ├── config.py           # YAML + 环境变量配置加载
-    ├── database.py         # SQLAlchemy async 数据库
-    ├── auth/               # JWT 认证
-    ├── projects/           # 项目 CRUD + 成员管理
-    ├── documents/          # 文档上传 + 多格式解析
-    ├── ingest/             # 两步 CoT 编译管线 + 异步队列
-    ├── embedding/          # Markdown 分块 + LanceDB 向量化
-    ├── search/             # BM25 + 向量 + RRF 融合
-    ├── wiki/               # Wiki CRUD + 知识图谱
-    ├── chat/               # RAG Chat (SSE) + 上下文预算
-    └── llm/                # LiteLLM 统一封装
+    ├── main.py
+    ├── config.py
+    ├── database.py
+    ├── auth/
+    ├── projects/           # CRUD + git_sync.py + 调度注册
+    ├── documents/
+    ├── ingest/
+    ├── embedding/
+    ├── search/
+    ├── wiki/
+    ├── chat/
+    ├── agents/
+    ├── feedback/
+    ├── admin/
+    └── llm/
 ```
 
 ## License
