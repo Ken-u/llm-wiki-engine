@@ -4,4 +4,5 @@ __pycache__
 projects
 .git
 *.md
+!README.md
 .env
