@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+import json
+from datetime import datetime
+
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from sqlalchemy import delete, select, text
 
 from app.auth.deps import require_admin
-from app.auth.models import User
-from app.config import get_config, save_db_settings
+from app.auth.models import User, UserApiToken
+from app.config import _reload_config, get_config, load_db_overrides, save_db_settings
+from app.database import async_session
+from app.agents.models import Agent, AgentProject
+from app.projects.models import Project, ProjectMember
 
 router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(require_admin)])
 
@@ -58,6 +66,221 @@ class TestResult(BaseModel):
     success: bool
     message: str
     detail: str | None = None
+
+
+class ConfigImportSummary(BaseModel):
+    users: int
+    projects: int
+    project_members: int
+    agents: int
+    agent_projects: int
+    system_settings: int
+
+
+def _dt(value: datetime | None) -> str | None:
+    return value.isoformat() if value else None
+
+
+def _parse_dt(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    return datetime.fromisoformat(value)
+
+
+async def _export_config_bundle(db) -> dict:
+    users = list((await db.execute(select(User).order_by(User.id.asc()))).scalars().all())
+    projects = list((await db.execute(select(Project).order_by(Project.created_at.asc()))).scalars().all())
+    project_members = list((await db.execute(select(ProjectMember).order_by(ProjectMember.id.asc()))).scalars().all())
+    agents = list((await db.execute(select(Agent).order_by(Agent.created_at.asc()))).scalars().all())
+    agent_projects = list((await db.execute(select(AgentProject).order_by(AgentProject.id.asc()))).scalars().all())
+    system_settings = (await db.execute(
+        text("SELECT section, data FROM system_settings ORDER BY section ASC")
+    )).fetchall()
+
+    return {
+        "version": 1,
+        "exported_at": datetime.utcnow().isoformat(),
+        "users": [
+            {
+                "id": u.id,
+                "username": u.username,
+                "password_hash": u.password_hash,
+                "role": u.role,
+                "created_at": _dt(u.created_at),
+            }
+            for u in users
+        ],
+        "system_settings": [
+            {"section": row[0], "data": json.loads(row[1])}
+            for row in system_settings
+        ],
+        "projects": [
+            {
+                "id": p.id,
+                "name": p.name,
+                "slug": p.slug,
+                "description": p.description,
+                "created_by": p.created_by,
+                "created_at": _dt(p.created_at),
+                "ticket_project_id": p.ticket_project_id,
+                "feedback_enabled": p.feedback_enabled,
+                "git_repo_url": p.git_repo_url,
+                "git_branch": p.git_branch,
+                "git_username": p.git_username,
+                "git_auth_token": p.git_auth_token,
+                "git_author_name": p.git_author_name,
+                "git_author_email": p.git_author_email,
+                "git_sync_enabled": p.git_sync_enabled,
+                "git_sync_time": p.git_sync_time,
+            }
+            for p in projects
+        ],
+        "project_members": [
+            {
+                "project_id": m.project_id,
+                "user_id": m.user_id,
+                "role": m.role,
+            }
+            for m in project_members
+        ],
+        "agents": [
+            {
+                "id": a.id,
+                "name": a.name,
+                "description": a.description,
+                "system_prompt": a.system_prompt,
+                "is_public": a.is_public,
+                "require_api_key": a.require_api_key,
+                "api_key_hash": a.api_key_hash,
+                "max_tool_calls": a.max_tool_calls,
+                "debug_result_limit": a.debug_result_limit,
+                "tool_labels": a.tool_labels,
+                "created_by": a.created_by,
+                "created_at": _dt(a.created_at),
+            }
+            for a in agents
+        ],
+        "agent_projects": [
+            {
+                "agent_id": ap.agent_id,
+                "project_id": ap.project_id,
+            }
+            for ap in agent_projects
+        ],
+    }
+
+
+def _validate_config_bundle(bundle: dict) -> None:
+    if bundle.get("version") != 1:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Unsupported config bundle version")
+    required = {"users", "system_settings", "projects", "project_members", "agents", "agent_projects"}
+    missing = required - set(bundle.keys())
+    if missing:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Missing sections: {', '.join(sorted(missing))}")
+
+
+async def _restore_config_bundle(db, bundle: dict) -> dict[str, int]:
+    _validate_config_bundle(bundle)
+
+    await db.execute(delete(AgentProject))
+    await db.execute(delete(ProjectMember))
+    await db.execute(delete(Agent))
+    await db.execute(delete(Project))
+    await db.execute(delete(UserApiToken))
+    await db.execute(delete(User))
+    await db.execute(text("DELETE FROM system_settings"))
+
+    for row in bundle["users"]:
+        db.add(User(
+            id=row["id"],
+            username=row["username"],
+            password_hash=row["password_hash"],
+            role=row["role"],
+            created_at=_parse_dt(row.get("created_at")),
+        ))
+    await db.flush()
+
+    for row in bundle["system_settings"]:
+        await db.execute(
+            text("INSERT INTO system_settings(section, data) VALUES (:section, :data)"),
+            {"section": row["section"], "data": json.dumps(row["data"], ensure_ascii=False)},
+        )
+
+    deferred_ticket_links: list[tuple[str, str | None]] = []
+    for row in bundle["projects"]:
+        deferred_ticket_links.append((row["id"], row.get("ticket_project_id")))
+        db.add(Project(
+            id=row["id"],
+            name=row["name"],
+            slug=row["slug"],
+            description=row.get("description", ""),
+            _disk_path="",
+            created_by=row["created_by"],
+            created_at=_parse_dt(row.get("created_at")),
+            ticket_project_id=None,
+            feedback_enabled=row.get("feedback_enabled", True),
+            git_repo_url=row.get("git_repo_url", ""),
+            git_branch=row.get("git_branch", "main"),
+            git_username=row.get("git_username", ""),
+            git_auth_token=row.get("git_auth_token", ""),
+            git_author_name=row.get("git_author_name", ""),
+            git_author_email=row.get("git_author_email", ""),
+            git_sync_enabled=row.get("git_sync_enabled", False),
+            git_sync_time=row.get("git_sync_time", "02:00"),
+        ))
+    await db.flush()
+
+    if deferred_ticket_links:
+        project_map = {
+            proj.id: proj
+            for proj in list((await db.execute(select(Project))).scalars().all())
+        }
+        for project_id, ticket_project_id in deferred_ticket_links:
+            project_map[project_id].ticket_project_id = ticket_project_id
+        await db.flush()
+
+    for row in bundle["project_members"]:
+        db.add(ProjectMember(
+            project_id=row["project_id"],
+            user_id=row["user_id"],
+            role=row["role"],
+        ))
+
+    for row in bundle["agents"]:
+        db.add(Agent(
+            id=row["id"],
+            name=row["name"],
+            description=row.get("description", ""),
+            system_prompt=row.get("system_prompt", ""),
+            is_public=row.get("is_public", False),
+            require_api_key=row.get("require_api_key", True),
+            api_key_hash=row.get("api_key_hash"),
+            max_tool_calls=row.get("max_tool_calls", 20),
+            debug_result_limit=row.get("debug_result_limit", 2000),
+            tool_labels=row.get("tool_labels", "{}"),
+            created_by=row["created_by"],
+            created_at=_parse_dt(row.get("created_at")),
+        ))
+    await db.flush()
+
+    for row in bundle["agent_projects"]:
+        db.add(AgentProject(
+            agent_id=row["agent_id"],
+            project_id=row["project_id"],
+        ))
+
+    await db.commit()
+    _reload_config()
+    load_db_overrides()
+
+    return {
+        "users": len(bundle["users"]),
+        "projects": len(bundle["projects"]),
+        "project_members": len(bundle["project_members"]),
+        "agents": len(bundle["agents"]),
+        "agent_projects": len(bundle["agent_projects"]),
+        "system_settings": len(bundle["system_settings"]),
+    }
 
 
 # ── LLM endpoints ──
@@ -374,6 +597,33 @@ async def test_feedback_model(body: FeedbackModelSettingsUpdate, user: User = De
         return TestResult(success=True, message="Feedback 模型连接成功", detail=f"响应: {content[:100]}")
     except Exception as exc:
         return TestResult(success=False, message="Feedback 模型连接失败", detail=str(exc)[:500])
+
+
+# ── Config backup ──
+
+@router.get("/config/export")
+async def export_config(user: User = Depends(require_admin)):
+    async with async_session() as db:
+        bundle = await _export_config_bundle(db)
+    return JSONResponse(
+        content=bundle,
+        headers={"Content-Disposition": 'attachment; filename="llm-wiki-config.json"'},
+    )
+
+
+@router.post("/config/import", response_model=ConfigImportSummary)
+async def import_config(
+    file: UploadFile = File(...),
+    user: User = Depends(require_admin),
+):
+    try:
+        payload = json.loads((await file.read()).decode("utf-8"))
+    except Exception:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid JSON bundle")
+
+    async with async_session() as db:
+        summary = await _restore_config_bundle(db, payload)
+    return ConfigImportSummary(**summary)
 
 
 # ── User management ──
