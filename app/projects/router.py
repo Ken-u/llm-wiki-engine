@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from types import SimpleNamespace
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
@@ -66,6 +67,13 @@ class UpdateProjectRequest(BaseModel):
     git_sync_time: str | None = None
 
 
+class TestGitConnectionRequest(BaseModel):
+    git_repo_url: str | None = None
+    git_branch: str | None = None
+    git_username: str | None = None
+    git_auth_token: str | None = None
+
+
 class AddMemberRequest(BaseModel):
     user_id: int
     role: str = Field(default="editor", pattern=r"^(owner|editor|viewer)$")
@@ -108,6 +116,15 @@ async def _build_project_response(db: AsyncSession, proj: Project) -> ProjectRes
         last_git_sync_at=proj.last_git_sync_at,
         last_git_sync_status=proj.last_git_sync_status,
         last_git_sync_error=proj.last_git_sync_error,
+    )
+
+
+def _project_for_git_test(project: Project, body: TestGitConnectionRequest | None):
+    return SimpleNamespace(
+        git_repo_url=body.git_repo_url if body and body.git_repo_url is not None else project.git_repo_url,
+        git_branch=body.git_branch if body and body.git_branch is not None else project.git_branch,
+        git_username=body.git_username if body and body.git_username is not None else project.git_username,
+        git_auth_token=body.git_auth_token if body and body.git_auth_token is not None else project.git_auth_token,
     )
 
 
@@ -220,13 +237,14 @@ async def list_members(
 @router.post("/{project_id}/git/test")
 async def test_git_connection(
     project_id: str,
+    body: TestGitConnectionRequest | None = None,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     await service.check_membership(db, project_id, user, require="owner")
     proj = await service.get_project_or_404(db, project_id)
     from app.projects.git_sync import test_project_git_connection
-    return await test_project_git_connection(proj)
+    return await test_project_git_connection(_project_for_git_test(proj, body))
 
 
 @router.post("/{project_id}/git/sync")

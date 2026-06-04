@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
+from app.config import get_config
 from app.database import Base
 
 
@@ -17,7 +19,7 @@ class Project(Base):
     name: Mapped[str] = mapped_column(String(128), nullable=False)
     slug: Mapped[str] = mapped_column(String(128), unique=True, nullable=False, index=True)
     description: Mapped[str] = mapped_column(Text, default="")
-    disk_path: Mapped[str] = mapped_column(String(512), nullable=False)
+    _disk_path: Mapped[str] = mapped_column("disk_path", String(512), nullable=False, default="")
     created_by: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     ticket_project_id: Mapped[str | None] = mapped_column(
@@ -36,6 +38,10 @@ class Project(Base):
     last_git_sync_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
     last_git_sync_status: Mapped[str] = mapped_column(String(16), default="idle")
     last_git_sync_error: Mapped[str] = mapped_column(Text, default="")
+
+    @property
+    def disk_path(self) -> str:
+        return str(Path(get_config().server.projects_dir) / self.id)
 
 
 class ProjectMember(Base):

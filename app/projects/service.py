@@ -36,6 +36,10 @@ _WIKI_DIRS = [
 ]
 
 
+def project_dir(project_id: str) -> Path:
+    return Path(get_config().server.projects_dir) / project_id
+
+
 async def create_project(
     db: AsyncSession,
     *,
@@ -49,7 +53,7 @@ async def create_project(
         raise HTTPException(status.HTTP_409_CONFLICT, "Slug already taken")
 
     project_id = str(uuid.uuid4())
-    base_dir = Path(get_config().server.projects_dir) / project_id
+    base_dir = project_dir(project_id)
     base_dir.mkdir(parents=True, exist_ok=True)
     for sub in _WIKI_DIRS:
         (base_dir / sub).mkdir(parents=True, exist_ok=True)
@@ -69,7 +73,7 @@ async def create_project(
         name=name,
         slug=slug,
         description=description,
-        disk_path=str(base_dir),
+        _disk_path="",
         created_by=user.id,
     )
     db.add(proj)
