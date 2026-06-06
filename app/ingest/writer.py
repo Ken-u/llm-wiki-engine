@@ -37,17 +37,25 @@ def _parse_frontmatter(content: str) -> tuple[dict | None, str]:
         return None, content
 
 
+def _to_str_list(val) -> list[str]:
+    if isinstance(val, list):
+        return [str(v) for v in val]
+    if isinstance(val, str):
+        return [val] if val else []
+    return []
+
+
 def _merge_frontmatter(existing_fm: dict, incoming_fm: dict, source_filename: str) -> dict:
     """Merge frontmatter: union tags/related/sources, keep newer updated."""
     merged = {**existing_fm, **incoming_fm}
 
     for key in ("tags", "related", "sources"):
-        existing_vals = set(existing_fm.get(key) or [])
-        incoming_vals = set(incoming_fm.get(key) or [])
+        existing_vals = set(_to_str_list(existing_fm.get(key)))
+        incoming_vals = set(_to_str_list(incoming_fm.get(key)))
         merged[key] = sorted(existing_vals | incoming_vals)
 
     if source_filename:
-        sources = set(merged.get("sources") or [])
+        sources = set(_to_str_list(merged.get("sources")))
         sources.add(source_filename)
         merged["sources"] = sorted(sources)
 
