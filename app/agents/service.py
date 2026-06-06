@@ -258,9 +258,16 @@ async def agent_toolcall_chat(
     system_prompt: str,
     max_tool_calls: int = 20,
     debug_result_limit: int = 2000,
+    include_ticket_project: bool = True,
 ):
-    """Agent chat via tool-calling orchestrator. Returns an async generator of SSE events."""
-    ticket_project = await get_ticket_project(db, projects)
+    """Agent chat via tool-calling orchestrator. Returns an async generator of SSE events.
+
+    Set include_ticket_project=False to disable ticket/case tools (e.g. for
+    knowledge API to prevent circular references).
+    """
+    ticket_project = (
+        await get_ticket_project(db, projects) if include_ticket_project else None
+    )
 
     ctx = ToolContext(
         main_projects=projects,

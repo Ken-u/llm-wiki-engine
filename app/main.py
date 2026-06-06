@@ -57,6 +57,8 @@ from app.agents.router import router as agents_router  # noqa: E402
 from app.agents.public_router import router as public_agents_router  # noqa: E402
 from app.admin.router import router as admin_router  # noqa: E402
 from app.feedback.router import router as feedback_router  # noqa: E402
+from app.projects.knowledge_router import router as knowledge_api_router  # noqa: E402
+from app.openai_compat.router import router as openai_compat_router  # noqa: E402
 
 app.include_router(auth_router)
 app.include_router(projects_router)
@@ -69,6 +71,8 @@ app.include_router(agents_router)
 app.include_router(public_agents_router)
 app.include_router(admin_router)
 app.include_router(feedback_router)
+app.include_router(knowledge_api_router)
+app.include_router(openai_compat_router)
 
 
 @app.get("/health")

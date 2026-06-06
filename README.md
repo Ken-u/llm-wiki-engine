@@ -169,6 +169,56 @@ POST /api/projects/{id}/feedback/{task_id}/apply
 ...
 ```
 
+### 知识检索 API（OpenAI 兼容）
+
+提供 `/v1/chat/completions` 端点，供外部系统（如案例生成 Fact Agent）以标准 OpenAI SDK / LiteLLM 方式查询项目知识库。
+
+```
+GET  /v1/models                 # 列出所有启用的虚拟模型名
+POST /v1/chat/completions       # 知识检索补全（非流式）
+```
+
+**项目配置 API**（owner 权限）：
+
+```
+GET   /api/projects/{id}/knowledge-api
+PATCH /api/projects/{id}/knowledge-api
+POST  /api/projects/{id}/knowledge-api/regenerate-token
+```
+
+#### 快路径与慢路径
+
+请求到达 `/v1/chat/completions` 后，引擎按以下优先级尝试路由：
+
+1. **快路径（无 LLM，低延迟）** — 满足以下任一条件时触发：
+   - 用户消息匹配短查询启发式（`什么是 X`、`X 的定义`、≤6 词的纯名词短语等）
+   - 在 `wiki/entities/` 或 `wiki/concepts/` 下按 slug 或 frontmatter title 精确命中
+   - BM25 搜索在概念/实体页中 top-1 score 超过阈值
+   
+   快路径直接截取命中页面的"定义 / 概述 / 简介"章节返回，不调用 LLM。
+
+2. **慢路径（Agent tool-calling loop）** — 当快路径未命中时自动触发：
+   - 消息是复杂问题（多句描述、含问号、超 6 词）
+   - 或虽是简短查询但知识库中没有对应的 entity/concept 页面
+   
+   慢路径复用项目的 knowledge Agent（自动创建），执行完整的 `search_wiki` → `read_wiki_page` → `grep_raw` 工具循环，最终将 Agent 生成的文本作为 `choices[0].message.content` 返回。
+   
+   **关键约束**：慢路径始终设置 `include_ticket_project=False`，即使项目绑定了案例库也不暴露 `search_ticket_cases` / `read_ticket_page` 工具，防止与 case-service 产出的案例形成循环引用。
+
+#### 调用示例
+
+```bash
+curl -X POST "http://engine:8000/v1/chat/completions" \
+  -H "Authorization: Bearer lwu_YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "your-virtual-model-name",
+    "messages": [{"role": "user", "content": "EDLA 和 GMS 有什么差异"}]
+  }'
+```
+
+**限制**：不支持客户端传入 `tools`/`tool_choice`/`functions`（返回 400）；暂不支持 `stream: true`。
+
 ### Agent / Admin
 
 ```
@@ -219,6 +269,8 @@ llm-wiki-engine/
     ├── wiki/
     ├── chat/
     ├── agents/
+    ├── knowledge/          # 知识检索（快路径 + 慢路径编排）
+    ├── openai_compat/      # /v1/ OpenAI 兼容端点
     ├── feedback/
     ├── admin/
     └── llm/

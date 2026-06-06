@@ -110,6 +110,9 @@ async def _auto_migrate(conn) -> None:
         ("projects", "last_git_sync_at", "DATETIME DEFAULT NULL"),
         ("projects", "last_git_sync_status", "TEXT DEFAULT 'idle'"),
         ("projects", "last_git_sync_error", "TEXT DEFAULT ''"),
+        ("projects", "knowledge_api_enabled", "BOOLEAN DEFAULT 0"),
+        ("projects", "knowledge_api_model_name", "TEXT DEFAULT ''"),
+        ("projects", "knowledge_agent_id", "TEXT DEFAULT NULL REFERENCES agents(id) ON DELETE SET NULL"),
     ]
 
     for table, column, col_type in migrations:

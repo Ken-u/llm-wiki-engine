@@ -27,6 +27,12 @@ class Project(Base):
     )
     feedback_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
 
+    knowledge_api_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    knowledge_api_model_name: Mapped[str] = mapped_column(String(128), default="", server_default="")
+    knowledge_agent_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("agents.id", ondelete="SET NULL"), nullable=True, default=None
+    )
+
     git_repo_url: Mapped[str] = mapped_column(String(512), default="")
     git_branch: Mapped[str] = mapped_column(String(128), default="main")
     git_username: Mapped[str] = mapped_column(String(128), default="")
