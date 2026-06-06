@@ -29,6 +29,7 @@ class IngestJobResponse(BaseModel):
     source_path: str
     status: str
     progress: str
+    step: int = 0
     files_written: list[str] | None = None
     error: str | None = None
     retry_count: int
@@ -106,10 +107,76 @@ async def ingest_status(
     stmt = (
         select(IngestJob)
         .where(IngestJob.project_id == project_id)
-        .where(IngestJob.status.in_(["pending", "processing"]))
+        .where(IngestJob.status.in_(["pending", "processing", "paused"]))
         .order_by(IngestJob.created_at.desc())
     )
     return list((await db.execute(stmt)).scalars().all())
+
+
+@router.post("/pause", status_code=status.HTTP_200_OK)
+async def pause_all_ingest(
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await check_membership(db, project_id, user)
+    await get_project_or_404(db, project_id)
+    count = await ingest_queue.pause_all(project_id)
+    return {"paused": count}
+
+
+@router.post("/resume", status_code=status.HTTP_200_OK)
+async def resume_all_ingest(
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await check_membership(db, project_id, user)
+    project = await get_project_or_404(db, project_id)
+    count = await ingest_queue.resume_all(project_id, project.disk_path)
+    return {"resumed": count}
+
+
+@router.post("/{job_id}/pause", status_code=status.HTTP_200_OK)
+async def pause_ingest_job(
+    project_id: str,
+    job_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await check_membership(db, project_id, user)
+    await get_project_or_404(db, project_id)
+
+    job = (await db.execute(select(IngestJob).where(IngestJob.id == job_id))).scalar_one_or_none()
+    if not job or job.project_id != project_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Job not found")
+    if job.status not in ("pending", "processing"):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Only active jobs can be paused")
+
+    if not await ingest_queue.pause_job(job_id):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Job cannot be paused")
+    return {"status": "paused"}
+
+
+@router.post("/{job_id}/resume", status_code=status.HTTP_200_OK)
+async def resume_ingest_job(
+    project_id: str,
+    job_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await check_membership(db, project_id, user)
+    project = await get_project_or_404(db, project_id)
+
+    job = (await db.execute(select(IngestJob).where(IngestJob.id == job_id))).scalar_one_or_none()
+    if not job or job.project_id != project_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Job not found")
+    if job.status != "paused":
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Only paused jobs can be resumed")
+
+    if not await ingest_queue.resume_job(job_id, project_id, project.disk_path):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Job cannot be resumed")
+    return {"status": "pending"}
 
 
 @router.delete("/{job_id}", status_code=status.HTTP_204_NO_CONTENT)

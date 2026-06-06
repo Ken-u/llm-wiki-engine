@@ -93,6 +93,11 @@ class ProgressCallback:
             await self.on_step(step)
 
 
+async def _ensure_not_paused(should_pause) -> None:
+    if should_pause:
+        await should_pause()
+
+
 async def auto_ingest(
     project_dir: str,
     source_path: str,
@@ -100,6 +105,7 @@ async def auto_ingest(
     on_progress=None,
     on_step=None,
     resume_step: int = 0,
+    should_pause=None,
 ) -> list[str]:
     """Run the full two-step ingest pipeline for a single source document.
 
@@ -115,6 +121,7 @@ async def auto_ingest(
     source_identity = src.name
 
     # ── Parse document ──
+    await _ensure_not_paused(should_pause)
     await cb.report("Parsing document...")
     content = parse_document(src)
     if not content.strip():
@@ -143,6 +150,7 @@ async def auto_ingest(
 
     # ── Step 1: Analysis ──
     if effective_step < 1:
+        await _ensure_not_paused(should_pause)
         await cb.report("Step 1/2: Analyzing source document...")
         analysis = await llm_client.stream_collect(
             build_analysis_prompt(purpose, index, truncated),
@@ -165,6 +173,7 @@ async def auto_ingest(
 
     # ── Step 2: Generation ──
     if effective_step < 2:
+        await _ensure_not_paused(should_pause)
         await cb.report("Step 2/2: Generating wiki pages...")
 
         source_base = source_identity.rsplit(".", 1)[0] if "." in source_identity else source_identity
@@ -212,6 +221,7 @@ async def auto_ingest(
         logger.info("Resuming %s from step %d (generation from checkpoint)", source_identity, effective_step)
 
     # ── Parse + Write ──
+    await _ensure_not_paused(should_pause)
     result = parse_file_blocks(generation)
     for w in result.warnings:
         logger.warning("Parse warning: %s", w)
@@ -227,6 +237,7 @@ async def auto_ingest(
 
     # ── Embedding ──
     try:
+        await _ensure_not_paused(should_pause)
         from app.embedding.service import embed_pages
         await cb.report("Embedding wiki pages...")
         await embed_pages(project_dir, written)
