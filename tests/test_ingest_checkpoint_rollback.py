@@ -32,7 +32,10 @@ def test_auto_ingest_rolls_back_written_files_when_write_fails(tmp_path):
         raise RuntimeError("disk write failed")
 
     async def run():
-        with patch("app.ingest.pipeline.llm_client.stream_collect", AsyncMock(side_effect=["analysis", generation])):
+        with patch(
+            "app.ingest.pipeline.collect_with_main_knowledge_tools",
+            AsyncMock(side_effect=["analysis", generation]),
+        ):
             with patch("app.ingest.pipeline.write_file_blocks", failing_write):
                 try:
                     await auto_ingest(str(project), str(source))

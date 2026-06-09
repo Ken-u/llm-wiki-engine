@@ -47,10 +47,22 @@ async def create_project(
     slug: str,
     description: str,
     user: User,
+    case_library_main_project_id: str | None = None,
 ) -> Project:
     exists = (await db.execute(select(Project).where(Project.slug == slug))).scalar_one_or_none()
     if exists:
         raise HTTPException(status.HTTP_409_CONFLICT, "Slug already taken")
+
+    main_project: Project | None = None
+    if case_library_main_project_id:
+        await check_membership(db, case_library_main_project_id, user, require="owner")
+        main_project = (
+            await db.execute(select(Project).where(Project.id == case_library_main_project_id))
+        ).scalar_one_or_none()
+        if main_project is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Main project not found")
+        if main_project.ticket_project_id is not None:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Main project already has a case library binding")
 
     project_id = str(uuid.uuid4())
     base_dir = project_dir(project_id)
@@ -79,6 +91,8 @@ async def create_project(
     db.add(proj)
     member = ProjectMember(project_id=project_id, user_id=user.id, role="owner")
     db.add(member)
+    if main_project:
+        main_project.ticket_project_id = project_id
     await db.commit()
     await db.refresh(proj)
     return proj

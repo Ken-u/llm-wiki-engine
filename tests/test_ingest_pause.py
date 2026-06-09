@@ -121,7 +121,7 @@ def test_execute_handles_job_paused():
                     "_get_job",
                     AsyncMock(return_value=AsyncMock(status="paused", step=1)),
                 ):
-                    await queue._execute("job-1", "/data/proj", "/tmp/doc.pdf")
+                    await queue._execute("job-1", "p1", "/data/proj", "/tmp/doc.pdf")
 
     asyncio.run(run())
 
@@ -131,15 +131,17 @@ def test_execute_clears_previous_error_on_success():
 
     async def run():
         with patch.object(queue, "_update_job", AsyncMock()) as update:
+            ingest = AsyncMock(return_value=["wiki/doc.md"])
             with patch(
                 "app.ingest.queue.auto_ingest",
-                AsyncMock(return_value=["wiki/doc.md"]),
+                ingest,
             ):
-                await queue._execute("job-1", "/data/proj", "/tmp/doc.pdf")
+                await queue._execute("job-1", "p1", "/data/proj", "/tmp/doc.pdf")
 
         final_update = update.await_args_list[-1].kwargs
         assert final_update["status"] == "done"
         assert final_update["error"] is None
+        assert ingest.await_args.kwargs["project_id"] == "p1"
 
     asyncio.run(run())
 

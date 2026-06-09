@@ -23,6 +23,8 @@ class CreateProjectRequest(BaseModel):
     name: str = Field(min_length=1, max_length=128)
     slug: str = Field(min_length=1, max_length=128, pattern=r"^[a-z0-9][a-z0-9_-]*$")
     description: str = ""
+    as_case_library: bool = False
+    main_project_id: str | None = None
 
 
 class ProjectResponse(BaseModel):
@@ -139,7 +141,16 @@ async def create_project(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    proj = await service.create_project(db, name=body.name, slug=body.slug, description=body.description, user=user)
+    if body.as_case_library and not body.main_project_id:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Main project is required when creating a case library")
+    proj = await service.create_project(
+        db,
+        name=body.name,
+        slug=body.slug,
+        description=body.description,
+        user=user,
+        case_library_main_project_id=body.main_project_id if body.as_case_library else None,
+    )
     return await _build_project_response(db, proj)
 
 

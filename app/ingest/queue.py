@@ -311,14 +311,22 @@ class IngestQueue:
         lock = self._get_lock(project_id)
         async with lock:
             await self._wait_until_resumed(job_id)
-            await self._execute(job_id, project_dir, source_path, resume_step=resume_step)
+            await self._execute(job_id, project_id, project_dir, source_path, resume_step=resume_step)
 
     async def _update_job(self, job_id: str, **kwargs) -> None:
         async with async_session() as db:
             await db.execute(update(IngestJob).where(IngestJob.id == job_id).values(**kwargs))
             await db.commit()
 
-    async def _execute(self, job_id: str, project_dir: str, source_path: str, *, resume_step: int = 0) -> None:
+    async def _execute(
+        self,
+        job_id: str,
+        project_id: str,
+        project_dir: str,
+        source_path: str,
+        *,
+        resume_step: int = 0,
+    ) -> None:
         await self._update_job(job_id, status="processing", progress="Starting...", completed_at=None)
 
         async def on_progress(msg: str):
@@ -331,6 +339,7 @@ class IngestQueue:
             written = await auto_ingest(
                 project_dir,
                 source_path,
+                project_id=project_id,
                 on_progress=on_progress,
                 on_step=on_step,
                 resume_step=resume_step,
@@ -367,7 +376,7 @@ class IngestQueue:
                     error=str(exc),
                 )
                 # Retry from the last completed step
-                await self._execute(job_id, project_dir, source_path, resume_step=current_step)
+                await self._execute(job_id, project_id, project_dir, source_path, resume_step=current_step)
             else:
                 await self._update_job(
                     job_id,

@@ -24,10 +24,10 @@ import aiofiles
 
 from app.documents.parser import parse_document
 from app.ingest.cache import check_cache, update_cache
+from app.ingest.knowledge_tool import collect_with_main_knowledge_tools, get_case_library_main_projects
 from app.ingest.parser import parse_file_blocks
 from app.ingest.prompts import build_analysis_prompt, build_generation_prompt
 from app.ingest.writer import write_file_blocks
-from app.llm import client as llm_client
 
 logger = logging.getLogger(__name__)
 
@@ -127,6 +127,7 @@ async def auto_ingest(
     project_dir: str,
     source_path: str,
     *,
+    project_id: str | None = None,
     on_progress=None,
     on_step=None,
     resume_step: int = 0,
@@ -169,6 +170,9 @@ async def auto_ingest(
     index = await _read_file_safe(base / "wiki" / "index.md")
     overview = await _read_file_safe(base / "wiki" / "overview.md")
     schema = await _read_file_safe(base / "schema.md")
+    main_knowledge_projects = await get_case_library_main_projects(project_id) if project_id else []
+    if main_knowledge_projects:
+        await cb.report(f"Linked main knowledge lookup enabled ({len(main_knowledge_projects)} project(s))")
 
     max_content_chars = 100_000
     truncated = content[:max_content_chars] if len(content) > max_content_chars else content
@@ -177,9 +181,10 @@ async def auto_ingest(
     if effective_step < 1:
         await _ensure_not_paused(should_pause)
         await cb.report("Step 1/2: Analyzing source document...")
-        analysis = await llm_client.stream_collect(
+        analysis = await collect_with_main_knowledge_tools(
             build_analysis_prompt(purpose, index, truncated),
             f"Analyze this source document:\n\n**File:** {source_identity}\n\n---\n\n{truncated}",
+            main_knowledge_projects,
             temperature=0.1,
             max_tokens=4096,
         )
@@ -226,9 +231,10 @@ async def auto_ingest(
             "No preamble. No analysis prose. Start immediately.",
         ])
 
-        generation = await llm_client.stream_collect(
+        generation = await collect_with_main_knowledge_tools(
             build_generation_prompt(schema, purpose, index, source_identity, overview, truncated, summary_path),
             user_msg,
+            main_knowledge_projects,
             temperature=0.1,
             max_tokens=8192,
         )
