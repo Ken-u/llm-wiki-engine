@@ -10,13 +10,16 @@ import json
 import logging
 from dataclasses import dataclass, field
 
-import litellm
-
 from app.config import get_config, FeedbackModelConfig
 
 logger = logging.getLogger(__name__)
 
-litellm.drop_params = True
+
+def _litellm():
+    import litellm
+
+    litellm.drop_params = True
+    return litellm
 
 
 @dataclass
@@ -105,6 +108,7 @@ async def complete_with_tools(
     """
     _validate_tools_schema(tools)
 
+    litellm = _litellm()
     kwargs = _build_kwargs(cfg)
     kwargs["tools"] = tools
     if tool_choice is not None:

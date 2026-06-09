@@ -12,7 +12,6 @@ from pathlib import Path
 
 import aiofiles
 import lancedb
-import litellm
 import pyarrow as pa
 
 from app.config import get_config
@@ -32,6 +31,13 @@ SCHEMA = pa.schema([
 ])
 
 
+def _litellm():
+    import litellm
+
+    litellm.drop_params = True
+    return litellm
+
+
 def _page_id_from_path(wiki_path: str) -> str:
     """Extract page_id from a wiki path like 'wiki/entities/foo.md' -> 'foo'."""
     name = Path(wiki_path).stem
@@ -45,6 +51,7 @@ def _lancedb_path(project_dir: str) -> str:
 
 
 async def _get_embeddings(texts: list[str]) -> list[list[float]]:
+    litellm = _litellm()
     cfg = get_config().embedding
     if not cfg.enabled or not texts:
         return []

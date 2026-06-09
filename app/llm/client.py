@@ -5,11 +5,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import AsyncGenerator
 
-import litellm
-
 from app.config import get_config
 
-litellm.drop_params = True
+
+def _litellm():
+    import litellm
+
+    litellm.drop_params = True
+    return litellm
 
 
 def _model_name() -> str:
@@ -45,6 +48,7 @@ async def complete(
     temperature: float | None = None,
     max_tokens: int = 4096,
 ) -> str:
+    litellm = _litellm()
     cfg = get_config().llm
     resp = await litellm.acompletion(
         messages=[
@@ -62,6 +66,7 @@ async def stream(
     temperature: float | None = None,
     max_tokens: int = 4096,
 ) -> AsyncGenerator[str, None]:
+    litellm = _litellm()
     cfg = get_config().llm
     resp = await litellm.acompletion(
         messages=messages,
@@ -126,6 +131,7 @@ async def complete_with_tools(
     max_tokens: int = 4096,
 ) -> LLMResponse:
     """Single LLM call with tool definitions. Returns structured response."""
+    litellm = _litellm()
     cfg = get_config().llm
     kwargs = _common_kwargs(
         temperature if temperature is not None else cfg.chat_temperature,
