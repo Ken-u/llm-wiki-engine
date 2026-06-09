@@ -126,6 +126,24 @@ def test_execute_handles_job_paused():
     asyncio.run(run())
 
 
+def test_execute_clears_previous_error_on_success():
+    queue = IngestQueue()
+
+    async def run():
+        with patch.object(queue, "_update_job", AsyncMock()) as update:
+            with patch(
+                "app.ingest.queue.auto_ingest",
+                AsyncMock(return_value=["wiki/doc.md"]),
+            ):
+                await queue._execute("job-1", "/data/proj", "/tmp/doc.pdf")
+
+        final_update = update.await_args_list[-1].kwargs
+        assert final_update["status"] == "done"
+        assert final_update["error"] is None
+
+    asyncio.run(run())
+
+
 def test_enqueue_does_not_schedule_when_project_is_paused():
     queue = IngestQueue()
 

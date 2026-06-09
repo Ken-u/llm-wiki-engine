@@ -77,6 +77,31 @@ async def _remove_checkpoint(project_dir: str, source_path: str) -> None:
     cp_file.unlink(missing_ok=True)
 
 
+async def _snapshot_targets(project_dir: str, paths: list[str]) -> dict[str, str | None]:
+    base = Path(project_dir)
+    snapshot: dict[str, str | None] = {}
+    for path in paths:
+        target = base / path
+        if target.exists():
+            async with aiofiles.open(target, "r", encoding="utf-8") as f:
+                snapshot[path] = await f.read()
+        else:
+            snapshot[path] = None
+    return snapshot
+
+
+async def _restore_targets(project_dir: str, snapshot: dict[str, str | None]) -> None:
+    base = Path(project_dir)
+    for path, content in snapshot.items():
+        target = base / path
+        if content is None:
+            target.unlink(missing_ok=True)
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        async with aiofiles.open(target, "w", encoding="utf-8") as f:
+            await f.write(content)
+
+
 class ProgressCallback:
     """Wraps the on_progress callable and step tracking."""
 
@@ -232,21 +257,26 @@ async def auto_ingest(
         return []
 
     await cb.report(f"Writing {len(result.blocks)} files...")
-    written = await write_file_blocks(project_dir, result.blocks, source_identity)
-    await cb.set_step(3)
-
-    # ── Embedding ──
+    target_snapshot = await _snapshot_targets(project_dir, [block.path for block in result.blocks])
     try:
-        await _ensure_not_paused(should_pause)
-        from app.embedding.service import embed_pages
-        await cb.report("Embedding wiki pages...")
-        await embed_pages(project_dir, written)
-    except Exception:
-        logger.exception("Embedding failed for %s (non-fatal)", source_identity)
+        written = await write_file_blocks(project_dir, result.blocks, source_identity)
+        await cb.set_step(3)
 
-    # ── Finalize ──
-    await update_cache(project_dir, source_identity, content, written)
-    await _remove_checkpoint(project_dir, source_path)
+        # ── Embedding ──
+        try:
+            await _ensure_not_paused(should_pause)
+            from app.embedding.service import embed_pages
+            await cb.report("Embedding wiki pages...")
+            await embed_pages(project_dir, written)
+        except Exception:
+            logger.exception("Embedding failed for %s (non-fatal)", source_identity)
+
+        # ── Finalize ──
+        await update_cache(project_dir, source_identity, content, written)
+        await _remove_checkpoint(project_dir, source_path)
+    except Exception:
+        await _restore_targets(project_dir, target_snapshot)
+        raise
 
     logger.info("Ingest complete for %s: %d files written", source_identity, len(written))
     return written

@@ -41,6 +41,7 @@ class ProjectResponse(BaseModel):
     git_author_name: str = ""
     git_author_email: str = ""
     git_sync_enabled: bool = False
+    git_sync_auto_compile: bool = False
     git_sync_time: str = "02:00"
     git_auth_configured: bool = False
     last_git_sync_at: datetime | None = None
@@ -65,6 +66,7 @@ class UpdateProjectRequest(BaseModel):
     git_author_name: str | None = None
     git_author_email: str | None = None
     git_sync_enabled: bool | None = None
+    git_sync_auto_compile: bool | None = None
     git_sync_time: str | None = None
 
 
@@ -112,6 +114,7 @@ async def _build_project_response(db: AsyncSession, proj: Project) -> ProjectRes
         git_author_name=proj.git_author_name,
         git_author_email=proj.git_author_email,
         git_sync_enabled=proj.git_sync_enabled,
+        git_sync_auto_compile=proj.git_sync_auto_compile,
         git_sync_time=proj.git_sync_time,
         git_auth_configured=bool(proj.git_auth_token),
         last_git_sync_at=proj.last_git_sync_at,
@@ -182,7 +185,11 @@ async def update_project(
     if "feedback_enabled" in body.model_fields_set:
         kwargs["feedback_enabled"] = body.feedback_enabled
 
-    git_fields = ["git_repo_url", "git_branch", "git_username", "git_author_name", "git_author_email", "git_sync_enabled", "git_sync_time"]
+    git_fields = [
+        "git_repo_url", "git_branch", "git_username", "git_author_name",
+        "git_author_email", "git_sync_enabled", "git_sync_auto_compile",
+        "git_sync_time",
+    ]
     for field in git_fields:
         if field in body.model_fields_set:
             kwargs[field] = getattr(body, field)

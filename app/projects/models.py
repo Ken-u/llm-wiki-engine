@@ -40,6 +40,7 @@ class Project(Base):
     git_author_name: Mapped[str] = mapped_column(String(128), default="")
     git_author_email: Mapped[str] = mapped_column(String(256), default="")
     git_sync_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    git_sync_auto_compile: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     git_sync_time: Mapped[str] = mapped_column(String(8), default="02:00")
     last_git_sync_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
     last_git_sync_status: Mapped[str] = mapped_column(String(16), default="idle")

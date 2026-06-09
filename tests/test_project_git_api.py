@@ -35,7 +35,7 @@ def test_project_model_has_git_fields():
         "git_repo_url", "git_branch", "git_username", "git_auth_token",
         "git_author_name", "git_author_email", "git_sync_enabled",
         "git_sync_time", "last_git_sync_at", "last_git_sync_status",
-        "last_git_sync_error",
+        "last_git_sync_error", "git_sync_auto_compile",
     }
     assert expected.issubset(cols)
 
@@ -53,7 +53,7 @@ def test_update_request_has_git_fields():
     expected = {
         "git_repo_url", "git_branch", "git_username", "git_auth_token",
         "clear_git_auth_token", "git_author_name", "git_author_email",
-        "git_sync_enabled", "git_sync_time",
+        "git_sync_enabled", "git_sync_time", "git_sync_auto_compile",
     }
     assert expected.issubset(fields)
 

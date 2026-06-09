@@ -319,7 +319,7 @@ class IngestQueue:
             await db.commit()
 
     async def _execute(self, job_id: str, project_dir: str, source_path: str, *, resume_step: int = 0) -> None:
-        await self._update_job(job_id, status="processing", progress="Starting...")
+        await self._update_job(job_id, status="processing", progress="Starting...", completed_at=None)
 
         async def on_progress(msg: str):
             await self._update_job(job_id, progress=msg)
@@ -342,6 +342,7 @@ class IngestQueue:
                 progress="Complete",
                 step=3,
                 files_written=written,
+                error=None,
                 completed_at=datetime.now(timezone.utc),
             )
         except JobPaused:

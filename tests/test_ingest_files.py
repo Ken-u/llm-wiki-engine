@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 from app.ingest.files import (
     IngestFileItem,
+    filter_and_sort_items,
     paginate_items,
     resolve_file_statuses,
 )
@@ -43,10 +44,25 @@ def test_resolve_file_statuses_assigns_each_file_to_one_highest_priority_status(
             created_at=now,
             completed_at=now,
         ),
+        SimpleNamespace(
+            source_path="/project/raw/sources/d.md",
+            status="failed",
+            files_written=None,
+            error="upstream error",
+            progress="Failed",
+            step=1,
+            created_at=now,
+            completed_at=now,
+        ),
     ]
 
     items = resolve_file_statuses(
-        source_paths=["/project/raw/sources/a.md", "/project/raw/sources/b.md", "/project/raw/sources/c.md"],
+        source_paths=[
+            "/project/raw/sources/a.md",
+            "/project/raw/sources/b.md",
+            "/project/raw/sources/c.md",
+            "/project/raw/sources/d.md",
+        ],
         jobs=jobs,
         changed_identities={"b.md"},
         cached_identities={"a.md", "b.md"},
@@ -56,6 +72,7 @@ def test_resolve_file_statuses_assigns_each_file_to_one_highest_priority_status(
     assert by_name["a.md"].status == "queued"
     assert by_name["b.md"].status == "updated"
     assert by_name["c.md"].status == "not_queued"
+    assert by_name["d.md"].status == "failed"
     assert [item.source_file for item in items].count("a.md") == 1
 
 
@@ -113,3 +130,15 @@ def test_resolve_file_statuses_does_not_put_paused_backlog_in_processing():
     )
 
     assert items[0].status == "queued"
+
+
+def test_filter_and_sort_items_searches_before_name_sorting():
+    items = [
+        IngestFileItem(source_file="beta.md", source_path="/tmp/beta.md", status="not_queued"),
+        IngestFileItem(source_file="alpha-guide.md", source_path="/tmp/alpha-guide.md", status="not_queued"),
+        IngestFileItem(source_file="z-alpha.md", source_path="/tmp/z-alpha.md", status="not_queued"),
+    ]
+
+    filtered = filter_and_sort_items(items, search="alpha", sort_dir="desc")
+
+    assert [item.source_file for item in filtered] == ["z-alpha.md", "alpha-guide.md"]

@@ -16,7 +16,13 @@ from app.auth.models import User
 from app.database import get_db
 from app.documents.parser import parse_document
 from app.ingest.cache import content_hash, load_cache
-from app.ingest.files import IngestFileStatus, paginate_items, resolve_file_statuses
+from app.ingest.files import (
+    IngestFileStatus,
+    SortDirection,
+    filter_and_sort_items,
+    paginate_items,
+    resolve_file_statuses,
+)
 from app.ingest.models import IngestJob
 from app.ingest.queue import ingest_queue
 from app.projects.service import check_membership, get_project_or_404
@@ -178,17 +184,20 @@ async def ingest_files(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     status_filter: IngestFileStatus | None = Query(default=None, alias="status"),
+    q: str = Query(default=""),
+    sort_dir: SortDirection = Query(default="asc"),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=10, ge=1, le=100),
 ):
     await check_membership(db, project_id, user)
     project = await get_project_or_404(db, project_id)
     items = await _build_file_items(project, db)
-    counts = {key: 0 for key in ["processing", "queued", "updated", "not_queued", "compiled"]}
+    counts = {key: 0 for key in ["processing", "queued", "failed", "updated", "not_queued", "compiled"]}
     for item in items:
         counts[item.status] = counts.get(item.status, 0) + 1
     if status_filter:
         items = [item for item in items if item.status == status_filter]
+    items = filter_and_sort_items(items, search=q, sort_dir=sort_dir)
     page_data = paginate_items(items, page=page, page_size=page_size)
     return {
         "items": [asdict(item) for item in page_data.items],
@@ -224,7 +233,7 @@ async def enqueue_ingest_files(
             raise HTTPException(status.HTTP_404_NOT_FOUND, f"Source file not found: {missing[0]}")
         selected = [by_name[source_file] for source_file in body.source_files]
 
-    eligible = [item for item in selected if item.status in ("updated", "not_queued")]
+    eligible = [item for item in selected if item.status in ("failed", "updated", "not_queued")]
     job_ids = []
     for item in eligible:
         job_ids.append(

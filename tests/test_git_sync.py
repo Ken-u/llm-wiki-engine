@@ -84,6 +84,14 @@ def test_inject_auth_default_username():
     assert "oauth2:token123@" in result
 
 
+def test_should_auto_enqueue_compile_requires_project_flag():
+    from app.projects.git_sync import _should_auto_enqueue_compile
+
+    assert _should_auto_enqueue_compile(SimpleNamespace(git_sync_auto_compile=False, ingest_paused=False)) is False
+    assert _should_auto_enqueue_compile(SimpleNamespace(git_sync_auto_compile=True, ingest_paused=True)) is False
+    assert _should_auto_enqueue_compile(SimpleNamespace(git_sync_auto_compile=True, ingest_paused=False)) is True
+
+
 def test_ensure_repo_empty_remote_creates_target_branch(tmp_path):
     remote = tmp_path / "remote.git"
     subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True, text=True)

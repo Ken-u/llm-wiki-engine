@@ -7,14 +7,16 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
-IngestFileStatus = Literal["processing", "queued", "updated", "not_queued", "compiled"]
+IngestFileStatus = Literal["processing", "queued", "failed", "updated", "not_queued", "compiled"]
+SortDirection = Literal["asc", "desc"]
 
 _STATUS_PRIORITY: dict[IngestFileStatus, int] = {
     "processing": 0,
     "queued": 1,
-    "updated": 2,
-    "not_queued": 3,
-    "compiled": 4,
+    "failed": 2,
+    "updated": 3,
+    "not_queued": 4,
+    "compiled": 5,
 }
 
 
@@ -57,6 +59,8 @@ def _job_file_status(job_status: str) -> IngestFileStatus | None:
         return "processing"
     if job_status in ("pending", "paused"):
         return "queued"
+    if job_status == "failed":
+        return "failed"
     return None
 
 
@@ -142,4 +146,22 @@ def paginate_items(items: list[IngestFileItem], *, page: int = 1, page_size: int
         total=len(items),
         page=safe_page,
         page_size=safe_page_size,
+    )
+
+
+def filter_and_sort_items(
+    items: list[IngestFileItem],
+    *,
+    search: str = "",
+    sort_dir: SortDirection = "asc",
+) -> list[IngestFileItem]:
+    needle = search.strip().lower()
+    filtered = [
+        item for item in items
+        if not needle or needle in item.source_file.lower()
+    ]
+    return sorted(
+        filtered,
+        key=lambda item: item.source_file.lower(),
+        reverse=sort_dir == "desc",
     )

@@ -2,10 +2,37 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from dataclasses import dataclass
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Awaitable, Callable, TypeVar
 
 from app.config import get_config
+
+logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
+MAX_LLM_ATTEMPTS = 4
+LLM_RETRY_DELAYS = (1.0, 2.0, 4.0)
+_TRANSIENT_ERROR_MARKERS = (
+    "internalservererror",
+    "upstream error",
+    "rate limit",
+    "ratelimit",
+    "timeout",
+    "timed out",
+    "apiconnectionerror",
+    "connection error",
+    "connection reset",
+    "temporarily unavailable",
+    "service unavailable",
+    "bad gateway",
+    "gateway timeout",
+    "status code: 500",
+    "status code: 502",
+    "status code: 503",
+    "status code: 504",
+)
 
 
 def _litellm():
@@ -41,6 +68,35 @@ def _common_kwargs(temperature: float, max_tokens: int) -> dict:
     return kwargs
 
 
+def _is_transient_llm_error(exc: Exception) -> bool:
+    name = exc.__class__.__name__.lower()
+    text = f"{name}: {exc}".lower()
+    return any(marker in text for marker in _TRANSIENT_ERROR_MARKERS)
+
+
+async def _with_llm_retries(label: str, fn: Callable[[], Awaitable[T]]) -> T:
+    last_exc: Exception | None = None
+    for attempt in range(1, MAX_LLM_ATTEMPTS + 1):
+        try:
+            return await fn()
+        except Exception as exc:
+            last_exc = exc
+            if attempt >= MAX_LLM_ATTEMPTS or not _is_transient_llm_error(exc):
+                raise
+            delay = LLM_RETRY_DELAYS[min(attempt - 1, len(LLM_RETRY_DELAYS) - 1)]
+            logger.warning(
+                "Transient LLM error during %s (attempt %d/%d), retrying in %.1fs: %s",
+                label,
+                attempt,
+                MAX_LLM_ATTEMPTS,
+                delay,
+                exc,
+            )
+            await asyncio.sleep(delay)
+    assert last_exc is not None
+    raise last_exc
+
+
 async def complete(
     system: str,
     user: str,
@@ -50,12 +106,15 @@ async def complete(
 ) -> str:
     litellm = _litellm()
     cfg = get_config().llm
-    resp = await litellm.acompletion(
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-        **_common_kwargs(temperature if temperature is not None else cfg.ingest_temperature, max_tokens),
+    resp = await _with_llm_retries(
+        "completion",
+        lambda: litellm.acompletion(
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            **_common_kwargs(temperature if temperature is not None else cfg.ingest_temperature, max_tokens),
+        ),
     )
     return resp.choices[0].message.content or ""
 
@@ -68,10 +127,13 @@ async def stream(
 ) -> AsyncGenerator[str, None]:
     litellm = _litellm()
     cfg = get_config().llm
-    resp = await litellm.acompletion(
-        messages=messages,
-        stream=True,
-        **_common_kwargs(temperature if temperature is not None else cfg.chat_temperature, max_tokens),
+    resp = await _with_llm_retries(
+        "stream",
+        lambda: litellm.acompletion(
+            messages=messages,
+            stream=True,
+            **_common_kwargs(temperature if temperature is not None else cfg.chat_temperature, max_tokens),
+        ),
     )
     async for chunk in resp:
         delta = chunk.choices[0].delta
@@ -94,17 +156,20 @@ async def stream_collect(
     if not cfg.stream:
         return await complete(system, user, temperature=temperature, max_tokens=max_tokens)
 
-    parts: list[str] = []
-    async for token in stream(
-        [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-        temperature=temperature,
-        max_tokens=max_tokens,
-    ):
-        parts.append(token)
-    return "".join(parts)
+    async def collect_stream() -> str:
+        parts: list[str] = []
+        async for token in stream(
+            [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            temperature=temperature,
+            max_tokens=max_tokens,
+        ):
+            parts.append(token)
+        return "".join(parts)
+
+    return await _with_llm_retries("stream_collect", collect_stream)
 
 
 @dataclass
@@ -139,7 +204,10 @@ async def complete_with_tools(
     )
     kwargs["tools"] = tools
 
-    resp = await litellm.acompletion(messages=messages, **kwargs)
+    resp = await _with_llm_retries(
+        "tool_completion",
+        lambda: litellm.acompletion(messages=messages, **kwargs),
+    )
     choice = resp.choices[0]
     msg = choice.message
 

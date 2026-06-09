@@ -180,8 +180,13 @@ def load_db_overrides() -> None:
     sync_url = _db_url_sync()
 
     try:
-        engine = sqlalchemy.create_engine(sync_url)
+        engine = sqlalchemy.create_engine(
+            sync_url,
+            connect_args={"timeout": 30} if sync_url.startswith("sqlite") else {},
+        )
         with engine.connect() as conn:
+            if sync_url.startswith("sqlite"):
+                conn.execute(sqlalchemy.text("PRAGMA busy_timeout=30000"))
             # Check table exists
             inspector = sqlalchemy.inspect(engine)
             if "system_settings" not in inspector.get_table_names():
