@@ -227,6 +227,97 @@ curl -X POST "http://engine:8000/v1/chat/completions" \
 /api/admin/...                  # 系统配置（admin）
 ```
 
+### 主 Wiki 与案例库绑定
+
+案例库不是独立的数据表，也不会混入主 wiki 的索引。它本质上是另一个普通 Project，通过主项目的 `ticket_project_id` 字段绑定：
+
+- `Project.ticket_project_id` 指向另一个 `projects.id`，被指向的项目就是案例库。
+- owner 可通过 `PATCH /api/projects/{id}` 设置或清空 `ticket_project_id`。
+- 设置绑定时会校验当前用户也能访问目标案例项目。
+- 不允许项目绑定自己，也不允许案例库再绑定另一个案例库，避免递归链。
+
+主 Agent 与案例库的运行时链路：
+
+```mermaid
+flowchart TD
+    User["用户问题"] --> AgentAPI["Agent Chat API<br/>/api/agents/{agent_id}/chat<br/>/api/public/agents/{id}/chat"]
+    AgentAPI --> LoadMain["加载 AgentProject<br/>得到主项目列表 main_projects"]
+    LoadMain --> FindTicket{"主项目是否绑定<br/>ticket_project_id?"}
+
+    FindTicket -- "否" --> MainOnly["ToolContext<br/>main_projects + ticket_project=None"]
+    FindTicket -- "是" --> LoadTicket["加载被绑定的 Project<br/>作为 ticket_project"]
+    LoadTicket --> WithTicket["ToolContext<br/>main_projects + ticket_project"]
+
+    MainOnly --> ToolDefsMain["暴露主 wiki 工具<br/>search_wiki<br/>read_wiki_page<br/>get_wiki_index<br/>get_project_purpose<br/>grep_raw/read_raw"]
+    WithTicket --> ToolDefsAll["暴露主 wiki 工具<br/>+ 案例库工具<br/>search_ticket_cases<br/>read_ticket_page"]
+
+    ToolDefsMain --> LLM["LLM 工具调用循环<br/>run_agent_turn"]
+    ToolDefsAll --> LLM
+
+    LLM --> SearchWiki["search_wiki<br/>搜索主项目 wiki"]
+    SearchWiki --> MainHybrid["BM25 wiki/**/*.md<br/>+ LanceDB wiki_chunks_v2<br/>+ RRF 融合"]
+    MainHybrid --> ReadWiki["read_wiki_page<br/>读取主 wiki 页面全文"]
+
+    LLM --> NeedCase{"问题涉及历史案例<br/>故障经验/类似 issue/处理先例?"}
+    NeedCase -- "是，且有 ticket_project" --> SearchTicket["search_ticket_cases<br/>搜索案例库 wiki"]
+    SearchTicket --> TicketHybrid["BM25 案例库 wiki/**/*.md<br/>+ 案例库 LanceDB<br/>+ RRF 融合"]
+    TicketHybrid --> ReadTicket["read_ticket_page<br/>读取案例页面全文"]
+    NeedCase -- "否或未绑定" --> Final
+
+    ReadWiki --> Final["基于工具结果生成回答"]
+    ReadTicket --> Final
+    Final --> Cite["引用 wiki 页面<br/>若使用案例库则说明参考了案例库"]
+
+    OpenAICompat["/v1/chat/completions<br/>知识检索 API"] -.-> NoTicket["include_ticket_project=False<br/>不暴露案例库工具"]
+    NoTicket -.-> ToolDefsMain
+```
+
+Agent 回复问题时走工具调用链路：
+
+1. Agent 通过 `AgentProject` 取得可访问的主项目列表。
+2. `agent_toolcall_chat()` 从这些主项目中查找第一个已绑定的 `ticket_project_id`，加载对应案例库项目。
+3. 运行时构造 `ToolContext(main_projects=..., ticket_project=...)`。
+4. 如果 `ticket_project` 存在，才会向 LLM 暴露 `search_ticket_cases` 和 `read_ticket_page`。
+5. 系统提示词会引导模型：当问题涉及历史案例、具体故障经验、类似 issue、处理先例时，可主动调用 `search_ticket_cases`。
+
+`search_ticket_cases` 的实现逻辑：
+
+```python
+if name == "search_ticket_cases":
+    if ctx.ticket_project is None:
+        return {"error": "Ticket wiki not configured for this project."}
+    query = arguments.get("query", "")
+    limit = min(arguments.get("limit", 5), 10)
+    return await _do_search(ctx.ticket_project, query, limit, "ticket")
+```
+
+它对案例库项目执行与主 wiki 相同的 hybrid search：
+
+- `search_bm25(project.disk_path, query, top_k=limit * 2)` 扫描案例库项目的 `wiki/**/*.md`。
+- `search_vector(project.disk_path, query, top_k=limit * 2)` 搜案例库项目自己的 `.llm-wiki/lancedb/wiki_chunks_v2`。
+- `rrf_fusion(kw, vec, query)` 融合 BM25 与向量结果。
+- 返回 `path`、`title`、`snippet`、`score`；当 `source_type == "ticket"` 时额外返回 `project_id` 和 `project_name`。
+
+`read_ticket_page` 的实现逻辑：
+
+```python
+if name == "read_ticket_page":
+    if ctx.ticket_project is None:
+        return {"error": "Ticket wiki not configured for this project."}
+    page_path = arguments.get("path", "")
+    return await _do_read(ctx.ticket_project, page_path, "ticket")
+```
+
+它从案例库项目磁盘目录读取指定 wiki 页面：
+
+- 拒绝包含 `..` 或以 `/` 开头的路径，避免越权读文件。
+- 实际读取路径为 `Path(ctx.ticket_project.disk_path) / page_path`。
+- 返回内容最多截断到 `MAX_PAGE_CHARS = 12000`。
+- 从页面前 10 行解析 `# Heading` 或 `title:` 作为标题。
+- 返回 `source_type: "ticket"`、`path`、`title`、`content`。
+
+因此，主 wiki Agent 并不是后端自动把案例库内容拼进 prompt，而是根据绑定关系额外暴露案例库工具；是否搜索案例库由 LLM 在工具循环中决定。例外是 `/v1/chat/completions` 知识检索 API：慢路径会显式禁用案例库工具（`include_ticket_project=False`），防止案例生成流程形成循环引用。
+
 ## 项目磁盘布局
 
 每个项目在 `PROJECTS_DIR/<uuid>/`：
