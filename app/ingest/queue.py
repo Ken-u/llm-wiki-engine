@@ -14,7 +14,7 @@ import logging
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 
 from app.database import async_session
 from app.ingest.exceptions import JobPaused
@@ -50,6 +50,20 @@ class IngestQueue:
     async def _get_job(self, job_id: str) -> IngestJob | None:
         async with async_session() as db:
             return (await db.execute(select(IngestJob).where(IngestJob.id == job_id))).scalar_one_or_none()
+
+    async def _is_project_paused(self, project_id: str) -> bool:
+        from app.projects.models import Project
+        async with async_session() as db:
+            paused = (
+                await db.execute(select(Project.ingest_paused).where(Project.id == project_id))
+            ).scalar_one_or_none()
+            return bool(paused)
+
+    async def _set_project_paused(self, project_id: str, paused: bool) -> None:
+        from app.projects.models import Project
+        async with async_session() as db:
+            await db.execute(update(Project).where(Project.id == project_id).values(ingest_paused=paused))
+            await db.commit()
 
     async def _is_paused(self, job_id: str) -> bool:
         job = await self._get_job(job_id)
@@ -100,6 +114,7 @@ class IngestQueue:
             # Need project disk_path — load them
             from app.projects.models import Project
             proj_cache: dict[str, str] = {}
+            paused_projects: set[str] = set()
             for job in jobs:
                 if job.project_id not in proj_cache:
                     proj = (await db.execute(
@@ -107,12 +122,17 @@ class IngestQueue:
                     )).scalar_one_or_none()
                     if proj:
                         proj_cache[job.project_id] = proj.disk_path
+                        if proj.ingest_paused:
+                            paused_projects.add(job.project_id)
 
         recovered = 0
         for job in jobs:
             disk_path = proj_cache.get(job.project_id)
             if not disk_path:
                 logger.warning("Skipping recovery of job %s: project %s not found", job.id, job.project_id)
+                continue
+            if job.project_id in paused_projects:
+                logger.info("Skipping recovery of job %s: project %s compile is paused", job.id, job.project_id)
                 continue
 
             logger.info(
@@ -138,22 +158,32 @@ class IngestQueue:
         user_id: int,
     ) -> str:
         """Create an IngestJob and schedule it."""
+        job_id = await self._create_job(project_id, source_path, user_id)
+
+        if not await self._is_project_paused(project_id):
+            self._schedule_task(job_id, project_id, project_dir, source_path)
+        return job_id
+
+    async def _create_job(
+        self,
+        project_id: str,
+        source_path: str,
+        user_id: int,
+    ) -> str:
         job_id = str(uuid.uuid4())
-
         async with async_session() as db:
-            job = IngestJob(
-                id=job_id,
-                project_id=project_id,
-                source_path=source_path,
-                status="pending",
-                progress="Queued",
-                step=0,
-                created_by=user_id,
+            db.add(
+                IngestJob(
+                    id=job_id,
+                    project_id=project_id,
+                    source_path=source_path,
+                    status="pending",
+                    progress="Queued",
+                    step=0,
+                    created_by=user_id,
+                )
             )
-            db.add(job)
             await db.commit()
-
-        self._schedule_task(job_id, project_id, project_dir, source_path)
         return job_id
 
     async def pause_job(self, job_id: str) -> bool:
@@ -179,7 +209,7 @@ class IngestQueue:
         source_path = job.source_path
         await self._update_job(job_id, status="pending", progress="Queued")
 
-        if job_id not in self._tasks:
+        if job_id not in self._tasks and not await self._is_project_paused(project_id):
             self._schedule_task(
                 job_id,
                 project_id,
@@ -189,14 +219,17 @@ class IngestQueue:
             )
         return True
 
-    async def pause_all(self, project_id: str) -> int:
+    async def pause_all(self, project_id: str, *, include_pending: bool = True) -> int:
+        statuses = ["processing"]
+        if include_pending:
+            statuses.append("pending")
         async with async_session() as db:
             jobs = list(
                 (
                     await db.execute(
                         select(IngestJob).where(
                             IngestJob.project_id == project_id,
-                            IngestJob.status.in_(["pending", "processing"]),
+                            IngestJob.status.in_(statuses),
                         )
                     )
                 ).scalars().all()
@@ -207,6 +240,51 @@ class IngestQueue:
             if await self.pause_job(job.id):
                 paused += 1
         return paused
+
+    async def _delete_waiting_jobs(self, project_id: str) -> int:
+        async with async_session() as db:
+            result = await db.execute(
+                delete(IngestJob).where(
+                    IngestJob.project_id == project_id,
+                    IngestJob.status.in_(["pending", "paused"]),
+                )
+            )
+            await db.commit()
+            return int(result.rowcount or 0)
+
+    async def _get_pending_jobs(self, project_id: str) -> list[IngestJob]:
+        async with async_session() as db:
+            return list(
+                (
+                    await db.execute(
+                        select(IngestJob)
+                        .where(IngestJob.project_id == project_id, IngestJob.status == "pending")
+                        .order_by(IngestJob.created_at.asc())
+                    )
+                ).scalars().all()
+            )
+
+    async def pause_project(self, project_id: str) -> dict[str, int]:
+        await self._set_project_paused(project_id, True)
+        cleared = await self._delete_waiting_jobs(project_id)
+        paused = await self.pause_all(project_id, include_pending=False)
+        return {"cleared": cleared, "paused": paused}
+
+    async def resume_project(self, project_id: str, project_dir: str) -> int:
+        await self._set_project_paused(project_id, False)
+        jobs = await self._get_pending_jobs(project_id)
+        scheduled = 0
+        for job in jobs:
+            if job.id not in self._tasks:
+                self._schedule_task(
+                    job.id,
+                    project_id,
+                    project_dir,
+                    job.source_path,
+                    resume_step=job.step or 0,
+                )
+                scheduled += 1
+        return scheduled
 
     async def resume_all(self, project_id: str, project_dir: str) -> int:
         async with async_session() as db:

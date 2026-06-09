@@ -46,6 +46,7 @@ class ProjectResponse(BaseModel):
     last_git_sync_at: datetime | None = None
     last_git_sync_status: str = "idle"
     last_git_sync_error: str = ""
+    ingest_paused: bool = False
 
     class Config:
         from_attributes = True
@@ -116,6 +117,7 @@ async def _build_project_response(db: AsyncSession, proj: Project) -> ProjectRes
         last_git_sync_at=proj.last_git_sync_at,
         last_git_sync_status=proj.last_git_sync_status,
         last_git_sync_error=proj.last_git_sync_error,
+        ingest_paused=proj.ingest_paused,
     )
 
 

@@ -69,8 +69,9 @@ def test_resume_job_requeues_when_no_task():
     async def run():
         with patch.object(queue, "_get_job", AsyncMock(return_value=job)):
             with patch.object(queue, "_update_job", AsyncMock()) as update:
-                with patch.object(queue, "_schedule_task") as schedule:
-                    ok = await queue.resume_job("job-1", "p1", "/data/proj")
+                with patch.object(queue, "_is_project_paused", AsyncMock(return_value=False)):
+                    with patch.object(queue, "_schedule_task") as schedule:
+                        ok = await queue.resume_job("job-1", "p1", "/data/proj")
         assert ok is True
         update.assert_awaited_once_with("job-1", status="pending", progress="Queued")
         schedule.assert_called_once_with(
@@ -93,8 +94,9 @@ def test_resume_job_skips_schedule_when_task_alive():
         try:
             with patch.object(queue, "_get_job", AsyncMock(return_value=job)):
                 with patch.object(queue, "_update_job", AsyncMock()):
-                    with patch.object(queue, "_schedule_task") as schedule:
-                        ok = await queue.resume_job("job-1", "p1", "/data/proj")
+                    with patch.object(queue, "_is_project_paused", AsyncMock(return_value=False)):
+                        with patch.object(queue, "_schedule_task") as schedule:
+                            ok = await queue.resume_job("job-1", "p1", "/data/proj")
             assert ok is True
             schedule.assert_not_called()
         finally:
@@ -120,5 +122,54 @@ def test_execute_handles_job_paused():
                     AsyncMock(return_value=AsyncMock(status="paused", step=1)),
                 ):
                     await queue._execute("job-1", "/data/proj", "/tmp/doc.pdf")
+
+    asyncio.run(run())
+
+
+def test_enqueue_does_not_schedule_when_project_is_paused():
+    queue = IngestQueue()
+
+    async def run():
+        with patch.object(queue, "_create_job", AsyncMock(return_value="job-1")):
+            with patch.object(queue, "_is_project_paused", AsyncMock(return_value=True)):
+                with patch.object(queue, "_schedule_task") as schedule:
+                    job_id = await queue.enqueue("p1", "/data/proj", "/tmp/doc.pdf", 1)
+
+        assert job_id == "job-1"
+        schedule.assert_not_called()
+
+    asyncio.run(run())
+
+
+def test_pause_project_clears_pending_and_pauses_processing():
+    queue = IngestQueue()
+
+    async def run():
+        with patch.object(queue, "_set_project_paused", AsyncMock()) as set_paused:
+            with patch.object(queue, "_delete_waiting_jobs", AsyncMock(return_value=3)) as delete_waiting:
+                with patch.object(queue, "pause_all", AsyncMock(return_value=1)) as pause_all:
+                    result = await queue.pause_project("p1")
+
+        assert result == {"cleared": 3, "paused": 1}
+        set_paused.assert_awaited_once_with("p1", True)
+        delete_waiting.assert_awaited_once_with("p1")
+        pause_all.assert_awaited_once_with("p1", include_pending=False)
+
+    asyncio.run(run())
+
+
+def test_resume_project_schedules_existing_manual_queue():
+    queue = IngestQueue()
+    jobs = [AsyncMock(id="job-1", project_id="p1", source_path="/tmp/doc.pdf", step=0)]
+
+    async def run():
+        with patch.object(queue, "_set_project_paused", AsyncMock()) as set_paused:
+            with patch.object(queue, "_get_pending_jobs", AsyncMock(return_value=jobs)):
+                with patch.object(queue, "_schedule_task") as schedule:
+                    count = await queue.resume_project("p1", "/data/proj")
+
+        assert count == 1
+        set_paused.assert_awaited_once_with("p1", False)
+        schedule.assert_called_once_with("job-1", "p1", "/data/proj", "/tmp/doc.pdf", resume_step=0)
 
     asyncio.run(run())
