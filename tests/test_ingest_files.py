@@ -76,6 +76,44 @@ def test_resolve_file_statuses_assigns_each_file_to_one_highest_priority_status(
     assert [item.source_file for item in items].count("a.md") == 1
 
 
+def test_resolve_file_statuses_uses_new_success_over_old_failure():
+    old = datetime(2026, 6, 10, 11, 36, tzinfo=timezone.utc)
+    new = datetime(2026, 6, 10, 14, 13, tzinfo=timezone.utc)
+    jobs = [
+        SimpleNamespace(
+            source_path="/project/raw/sources/guide.md",
+            status="failed",
+            files_written=None,
+            error="old upstream error",
+            progress="Failed",
+            step=0,
+            created_at=old,
+            completed_at=old,
+        ),
+        SimpleNamespace(
+            source_path="/project/raw/sources/guide.md",
+            status="done",
+            files_written=["wiki/sources/guide.md"],
+            error=None,
+            progress="Complete",
+            step=3,
+            created_at=new,
+            completed_at=new,
+        ),
+    ]
+
+    items = resolve_file_statuses(
+        source_paths=["/project/raw/sources/guide.md"],
+        jobs=jobs,
+        changed_identities=set(),
+        cached_identities={"guide.md"},
+    )
+
+    assert items[0].status == "compiled"
+    assert items[0].job_status == "done"
+    assert items[0].error is None
+
+
 def test_paginate_items_defaults_to_first_ten_and_reports_total():
     items = [
         IngestFileItem(source_file=f"{idx}.md", source_path=f"/tmp/{idx}.md", status="not_queued")

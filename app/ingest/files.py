@@ -19,6 +19,8 @@ _STATUS_PRIORITY: dict[IngestFileStatus, int] = {
     "compiled": 5,
 }
 
+_ACTIVE_JOB_STATUSES = {"processing", "pending", "paused"}
+
 
 @dataclass
 class IngestFileItem:
@@ -89,6 +91,17 @@ def resolve_file_statuses(
         if current is None:
             latest_job_by_identity[identity] = job
             continue
+
+        current_active = current.status in _ACTIVE_JOB_STATUSES
+        next_active = job.status in _ACTIVE_JOB_STATUSES
+        if not current_active and not next_active:
+            latest_job_by_identity[identity] = job
+            continue
+        if current_active != next_active:
+            if next_active:
+                latest_job_by_identity[identity] = job
+            continue
+
         current_status = _job_file_status(current.status)
         next_status = _job_file_status(job.status)
         if next_status is not None and (
