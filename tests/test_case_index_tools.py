@@ -152,3 +152,21 @@ def test_read_ticket_case_not_found(tmp_path):
         ))
 
     assert "error" in result
+
+
+# ── Prompt policy tests ──
+
+from app.agents.orchestrator import _build_system_prompt
+
+
+def test_system_prompt_includes_case_search_policy():
+    prompt = _build_system_prompt("", has_ticket=True)
+    assert "search_ticket_cases" in prompt
+    assert "read_ticket_case" in prompt
+    assert "read_ticket_page" not in prompt
+    assert "case_id" in prompt
+
+
+def test_system_prompt_no_ticket_has_no_case_policy():
+    prompt = _build_system_prompt("", has_ticket=False)
+    assert "search_ticket_cases" not in prompt

@@ -38,12 +38,15 @@ def _build_system_prompt(custom_prompt: str, has_ticket: bool) -> str:
     """Build system prompt with tool use policy."""
     ticket_policy = ""
     if has_ticket:
-        ticket_policy = (
-            "\n- 如果用户问题涉及历史案例、具体故障经验、类似 issue、处理先例，"
-            "可主动调用 search_ticket_cases 搜索案例库。"
-            '\n- 如果使用了案例库的内容来回答问题，请在回答末尾显式说明'
-            '\u201c以上结论参考了案例库\u201d并列出引用的案例页面。'
-        )
+        ticket_policy = "\n".join([
+            "",
+            "案例库使用策略：",
+            "- 如果用户问题涉及历史案例、具体故障经验、类似 issue、处理先例，可调用 search_ticket_cases 搜索案例库。",
+            "- 搜索案例后，优先基于候选摘要（problem_summary、root_cause、resolution）直接回答。",
+            "- 只有需要具体排查步骤、日志、完整上下文时才调用 read_ticket_case。",
+            "- 不要一次读取多个案例全文。",
+            "- 使用案例库时，回答末尾列出 case_id + title。",
+        ])
 
     policy = "\n".join([
         "你是一个知识问答助手。你可以使用工具来检索知识库和案例库。",
@@ -161,7 +164,7 @@ async def run_agent_turn(
                 yield json.dumps({"tool_result": {"name": tc.name, "result": _truncate_for_debug(result, debug_result_limit)}})
                 traces.append(ToolTrace(name=tc.name, arguments=args, result=result))
 
-                if tc.name in ("search_ticket_cases", "read_ticket_page"):
+                if tc.name in ("search_ticket_cases", "read_ticket_case"):
                     if "error" not in result:
                         used_ticket = True
 
