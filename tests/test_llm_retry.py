@@ -49,3 +49,35 @@ def test_complete_does_not_retry_non_transient_error():
         sleep.assert_not_awaited()
 
     asyncio.run(run())
+
+
+def test_complete_passes_configured_timeout_to_litellm():
+    captured_kwargs = {}
+
+    async def completion(**kwargs):
+        captured_kwargs.update(kwargs)
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(message=SimpleNamespace(content="ok")),
+            ],
+        )
+
+    async def run():
+        cfg = SimpleNamespace(
+            llm=SimpleNamespace(
+                provider="openai",
+                model="test-model",
+                api_key="test-key",
+                api_base=None,
+                ingest_temperature=0.1,
+                timeout=300,
+            )
+        )
+        litellm = SimpleNamespace(acompletion=completion)
+        with patch.object(client, "get_config", return_value=cfg):
+            with patch.object(client, "_litellm", return_value=litellm):
+                result = await client.complete("system", "user")
+        assert result == "ok"
+        assert captured_kwargs["timeout"] == 300
+
+    asyncio.run(run())

@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth.deps import get_current_user
 from app.auth.models import User
 from app.database import get_db
+from app.embedding.service import rebuild_project_embeddings
 from app.projects.service import check_membership, get_project_or_404
 from app.search.bm25 import search_bm25
 from app.search.fusion import FusedResult, rrf_fusion
@@ -37,6 +38,11 @@ class SearchResponse(BaseModel):
     mode: str
     keyword_hits: int
     vector_hits: int
+
+
+class ReindexResponse(BaseModel):
+    pages: int
+    chunks: int
 
 
 @router.post("", response_model=SearchResponse)
@@ -83,3 +89,14 @@ async def search(
         keyword_hits=len(kw_results),
         vector_hits=len(vec_results),
     )
+
+
+@router.post("/reindex", response_model=ReindexResponse)
+async def rebuild_vector_index(
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await check_membership(db, project_id, user)
+    project = await get_project_or_404(db, project_id)
+    return await rebuild_project_embeddings(project.disk_path)

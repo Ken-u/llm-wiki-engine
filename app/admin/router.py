@@ -28,6 +28,7 @@ class LLMSettingsResponse(BaseModel):
     api_key: str
     api_base: str | None
     max_context_size: int
+    timeout: int
     ingest_temperature: float
     chat_temperature: float
     stream: bool
@@ -39,6 +40,7 @@ class LLMSettingsUpdate(BaseModel):
     api_key: str | None = None
     api_base: str | None = None
     max_context_size: int | None = None
+    timeout: int | None = None
     ingest_temperature: float | None = None
     chat_temperature: float | None = None
     stream: bool | None = None
@@ -294,6 +296,7 @@ async def get_llm_settings(user: User = Depends(require_admin)):
         api_key=_mask_key(cfg.api_key),
         api_base=cfg.api_base,
         max_context_size=cfg.max_context_size,
+        timeout=cfg.timeout,
         ingest_temperature=cfg.ingest_temperature,
         chat_temperature=cfg.chat_temperature,
         stream=cfg.stream,
@@ -310,6 +313,7 @@ async def test_llm(body: LLMSettingsUpdate, user: User = Depends(require_admin))
     model = body.model or cfg.model
     api_key = _resolve_key(body.api_key, cfg.api_key)
     api_base = body.api_base if body.api_base is not None else cfg.api_base
+    timeout = body.timeout if body.timeout is not None else cfg.timeout
 
     if "/" in model:
         model_name = model
@@ -326,6 +330,7 @@ async def test_llm(body: LLMSettingsUpdate, user: User = Depends(require_admin))
         "max_tokens": 16,
         "temperature": 0,
         "api_key": api_key or None,
+        "timeout": timeout,
     }
     if api_base:
         kwargs["api_base"] = api_base
@@ -353,6 +358,7 @@ async def update_llm_settings(body: LLMSettingsUpdate, user: User = Depends(requ
         api_key=_mask_key(cfg.api_key),
         api_base=cfg.api_base,
         max_context_size=cfg.max_context_size,
+        timeout=cfg.timeout,
         ingest_temperature=cfg.ingest_temperature,
         chat_temperature=cfg.chat_temperature,
         stream=cfg.stream,

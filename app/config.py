@@ -39,6 +39,7 @@ class LLMConfig(BaseModel):
     api_key: str = ""
     api_base: str | None = None
     max_context_size: int = 128000
+    timeout: int = 120
     ingest_temperature: float = 0.1
     chat_temperature: float = 0.7
     stream: bool = False

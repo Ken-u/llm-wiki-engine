@@ -62,6 +62,7 @@ def _common_kwargs(temperature: float, max_tokens: int) -> dict:
         "temperature": temperature,
         "max_tokens": max_tokens,
         "api_key": cfg.api_key or None,
+        "timeout": cfg.timeout,
     }
     if cfg.api_base:
         kwargs["api_base"] = cfg.api_base

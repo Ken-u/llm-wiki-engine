@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import re
+import shutil
 from pathlib import Path
 
 import aiofiles
@@ -21,14 +22,27 @@ logger = logging.getLogger(__name__)
 
 TABLE_NAME = "wiki_chunks_v2"
 
-SCHEMA = pa.schema([
-    pa.field("chunk_id", pa.string()),
-    pa.field("page_id", pa.string()),
-    pa.field("chunk_index", pa.int32()),
-    pa.field("chunk_text", pa.string()),
-    pa.field("heading_path", pa.string()),
-    pa.field("vector", pa.list_(pa.float32())),
-])
+def _schema_for_dimension(vector_dim: int) -> pa.Schema:
+    return pa.schema([
+        pa.field("chunk_id", pa.string()),
+        pa.field("page_id", pa.string()),
+        pa.field("chunk_index", pa.int32()),
+        pa.field("chunk_text", pa.string()),
+        pa.field("heading_path", pa.string()),
+        pa.field("vector", pa.list_(pa.float32(), list_size=vector_dim)),
+    ])
+
+
+def _resolve_vector_dimension(configured_dim: int | None, actual_dim: int) -> int:
+    if configured_dim and configured_dim > 0:
+        if configured_dim == actual_dim:
+            return configured_dim
+        logger.warning(
+            "Configured embedding dimension %d does not match actual embedding dimension %d; using actual dimension",
+            configured_dim,
+            actual_dim,
+        )
+    return actual_dim
 
 
 def _litellm():
@@ -133,6 +147,11 @@ async def embed_pages(project_dir: str, wiki_paths: list[str]) -> int:
     if len(vectors) != len(all_chunks):
         logger.error("Vector count mismatch: %d texts, %d vectors", len(texts), len(vectors))
         return 0
+    actual_dim = len(vectors[0]) if vectors else 0
+    if actual_dim <= 0:
+        logger.error("Embedding API returned empty vectors")
+        return 0
+    vector_dim = _resolve_vector_dimension(cfg.dimensions, actual_dim)
 
     # Prepare LanceDB records
     records = []
@@ -162,7 +181,25 @@ async def embed_pages(project_dir: str, wiki_paths: list[str]) -> int:
                 pass
         await table.add(records)
     else:
-        await db.create_table(TABLE_NAME, records, schema=SCHEMA)
+        await db.create_table(TABLE_NAME, records, schema=_schema_for_dimension(vector_dim))
 
     logger.info("Embedded %d chunks for %d pages", len(records), len(wiki_paths))
     return len(records)
+
+
+async def rebuild_project_embeddings(project_dir: str) -> dict[str, int]:
+    """Delete the project's LanceDB vector store and embed all wiki markdown pages."""
+    base = Path(project_dir)
+    wiki_dir = base / "wiki"
+    wiki_paths = sorted(
+        str(path.relative_to(base))
+        for path in wiki_dir.rglob("*.md")
+        if path.is_file() and not path.name.startswith(".")
+    ) if wiki_dir.exists() else []
+
+    db_dir = base / ".llm-wiki" / "lancedb"
+    if db_dir.exists():
+        shutil.rmtree(db_dir)
+
+    chunks = await embed_pages(project_dir, wiki_paths) if wiki_paths else 0
+    return {"pages": len(wiki_paths), "chunks": chunks}

@@ -37,11 +37,21 @@ async def search_vector(project_dir: str, query: str, top_k: int = 10) -> list[V
 
     query_vec = embeddings[0]
     table = await db.open_table(TABLE_NAME)
-    results = (
-        await table.vector_search(query_vec)
-        .limit(top_k)
-        .to_pandas()
-    )
+    try:
+        results = (
+            await table.vector_search(query_vec)
+            .limit(top_k)
+            .to_pandas()
+        )
+    except ValueError as e:
+        if "No vector column found to match with the query vector dimension" not in str(e):
+            raise
+        logger.warning(
+            "Skipping vector search for %s: query embedding dimension %d does not match existing LanceDB table",
+            project_dir,
+            len(query_vec),
+        )
+        return []
 
     output = []
     for _, row in results.iterrows():
