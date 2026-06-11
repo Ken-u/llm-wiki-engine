@@ -7,7 +7,7 @@ import uuid
 from pathlib import Path
 
 from fastapi import HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from dataclasses import dataclass
@@ -217,5 +217,10 @@ async def delete_project(db: AsyncSession, project: Project) -> None:
     disk = Path(project.disk_path)
     if disk.exists():
         shutil.rmtree(disk, ignore_errors=True)
+    await db.execute(
+        update(Project)
+        .where(Project.ticket_project_id == project.id)
+        .values(ticket_project_id=None)
+    )
     await db.delete(project)
     await db.commit()

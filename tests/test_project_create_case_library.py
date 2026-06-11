@@ -107,3 +107,43 @@ def test_create_project_as_case_library_rejects_already_bound_main(tmp_path, mon
         await engine.dispose()
 
     asyncio.run(run())
+
+
+def test_delete_case_library_clears_main_project_binding(tmp_path, monkeypatch):
+    async def run():
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'projects.db'}")
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        Session = async_sessionmaker(engine, expire_on_commit=False)
+
+        monkeypatch.setattr(
+            "app.projects.service.get_config",
+            lambda: SimpleNamespace(server=SimpleNamespace(projects_dir=str(tmp_path / "repos"))),
+        )
+        monkeypatch.setattr(
+            "app.projects.models.get_config",
+            lambda: SimpleNamespace(server=SimpleNamespace(projects_dir=str(tmp_path / "repos"))),
+        )
+
+        async with Session() as db:
+            user = User(id=1, username="owner", password_hash="hash", role="user")
+            main = Project(id="main-1", name="Main", slug="main", description="", created_by=1)
+            case = Project(id="case-1", name="Cases", slug="cases", description="", created_by=1)
+            main.ticket_project_id = case.id
+            db.add(user)
+            db.add(main)
+            db.add(case)
+            db.add(ProjectMember(project_id="main-1", user_id=1, role="owner"))
+            db.add(ProjectMember(project_id="case-1", user_id=1, role="owner"))
+            await db.commit()
+
+            await service.delete_project(db, case)
+
+            main_project = (
+                await db.execute(select(Project).where(Project.id == "main-1"))
+            ).scalar_one()
+            assert main_project.ticket_project_id is None
+
+        await engine.dispose()
+
+    asyncio.run(run())
