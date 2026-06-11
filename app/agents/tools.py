@@ -14,6 +14,8 @@ from typing import Any
 
 import aiofiles
 
+from app.case_index.builder import load_manifest
+from app.case_index.search import search_cases, read_case
 from app.projects.models import Project
 from app.search.bm25 import search_bm25
 from app.search.fusion import rrf_fusion
@@ -127,12 +129,12 @@ def get_tool_definitions(ctx: ToolContext) -> list[dict]:
                 "type": "function",
                 "function": {
                     "name": "search_ticket_cases",
-                    "description": "在绑定的案例库（ticket wiki）中搜索历史案例、故障经验、处理先例。",
+                    "description": "搜索案例库中的历史案例记录和案例片段。返回结构化的案例候选列表，包含问题摘要、根因和解决方案。",
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "query": {"type": "string", "description": "搜索查询词"},
-                            "limit": {"type": "integer", "description": "返回结果数量上限", "default": 5},
+                            "limit": {"type": "integer", "description": "返回结果数量上限", "default": 3},
                         },
                         "required": ["query"],
                     },
@@ -141,14 +143,15 @@ def get_tool_definitions(ctx: ToolContext) -> list[dict]:
             {
                 "type": "function",
                 "function": {
-                    "name": "read_ticket_page",
-                    "description": "读取案例库中指定路径的页面全文内容。",
+                    "name": "read_ticket_case",
+                    "description": "读取案例库中指定案例的详情。可选只读取某个章节。",
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "path": {"type": "string", "description": "页面路径，如 wiki/issues/boot-failure.md"},
+                            "case_id": {"type": "string", "description": "案例 ID"},
+                            "section": {"type": "string", "description": "章节名，如'根因分析'、'解决方案'。不传则返回压缩全文。"},
                         },
-                        "required": ["path"],
+                        "required": ["case_id"],
                     },
                 },
             },
@@ -336,14 +339,43 @@ async def execute_tool(name: str, arguments: dict, ctx: ToolContext) -> dict:
         if ctx.ticket_project is None:
             return {"error": "Ticket wiki not configured for this project."}
         query = arguments.get("query", "")
-        limit = min(arguments.get("limit", 5), 10)
-        return await _do_search(ctx.ticket_project, query, limit, "ticket")
+        limit = min(arguments.get("limit", 3), 5)
 
-    if name == "read_ticket_page":
+        manifest = load_manifest(ctx.ticket_project.disk_path)
+        if manifest is None or not manifest.is_ready:
+            return {"error": "Case index is not built or not ready. Rebuild the case index first."}
+
+        results = await search_cases(ctx.ticket_project.disk_path, query, limit=limit)
+        return {
+            "source_type": "ticket_case_index",
+            "results": [
+                {
+                    "case_id": r.case_id,
+                    "title": r.title,
+                    "domain": r.domain,
+                    "problem_summary": r.problem_summary,
+                    "root_cause": r.root_cause,
+                    "resolution": r.resolution,
+                    "matched_sections": [
+                        {"section": s.section, "snippet": s.snippet}
+                        for s in r.matched_sections
+                    ],
+                    "score": r.score,
+                }
+                for r in results
+            ],
+            "usage_hint": "If the summaries are enough, answer directly. Call read_ticket_case only when details are required.",
+        }
+
+    if name == "read_ticket_case":
         if ctx.ticket_project is None:
             return {"error": "Ticket wiki not configured for this project."}
-        page_path = arguments.get("path", "")
-        return await _do_read(ctx.ticket_project, page_path, "ticket")
+        case_id = arguments.get("case_id", "")
+        section = arguments.get("section")
+        result = read_case(ctx.ticket_project.disk_path, case_id, section=section)
+        if result is None:
+            return {"error": f"Case not found: {case_id}"}
+        return result
 
     if name == "read_raw":
         return await _do_read_raw(ctx, arguments)
