@@ -43,7 +43,7 @@ def get_tool_definitions(ctx: ToolContext) -> list[dict]:
             "type": "function",
             "function": {
                 "name": "search_wiki",
-                "description": "在主知识库中进行语义搜索，返回最相关的 wiki 页面列表。",
+                "description": "在主知识库中进行语义搜索。仅当对话历史中尚无相关信息时使用，勿对追问/澄清重复搜索。",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -58,7 +58,7 @@ def get_tool_definitions(ctx: ToolContext) -> list[dict]:
             "type": "function",
             "function": {
                 "name": "read_wiki_page",
-                "description": "读取主知识库中指定路径的 wiki 页面全文内容。",
+                "description": "读取主知识库 wiki 页面全文。仅当历史中未包含该页内容且 search 摘要不足时使用，勿重复读取已在对话中出现过的页面。",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -129,7 +129,7 @@ def get_tool_definitions(ctx: ToolContext) -> list[dict]:
                 "type": "function",
                 "function": {
                     "name": "search_ticket_cases",
-                    "description": "搜索案例库中的历史案例记录和案例片段。返回结构化的案例候选列表，包含问题摘要、根因和解决方案。",
+                    "description": "搜索案例库。仅当用户问新案例/新故障主题且对话历史未涵盖时使用，勿对追问已讨论案例重复搜索。",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -144,7 +144,7 @@ def get_tool_definitions(ctx: ToolContext) -> list[dict]:
                 "type": "function",
                 "function": {
                     "name": "read_ticket_case",
-                    "description": "读取案例库中指定案例的详情。可选只读取某个章节。",
+                    "description": "读取案例详情。仅当 search 摘要不足且该案例未在对话历史中完整出现时使用，勿重复读取已讨论过的章节。",
                     "parameters": {
                         "type": "object",
                         "properties": {
