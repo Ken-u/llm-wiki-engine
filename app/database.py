@@ -142,6 +142,8 @@ async def _auto_migrate(conn) -> None:
         ("projects", "knowledge_api_enabled", "BOOLEAN DEFAULT 0"),
         ("projects", "knowledge_api_model_name", "TEXT DEFAULT ''"),
         ("projects", "knowledge_agent_id", "TEXT DEFAULT NULL REFERENCES agents(id) ON DELETE SET NULL"),
+        ("projects", "project_type", "TEXT DEFAULT 'knowledge_base'"),
+        ("projects", "case_index_auto_rebuild", "BOOLEAN DEFAULT 0"),
     ]
 
     for table, column, col_type in migrations:

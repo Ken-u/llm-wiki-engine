@@ -46,6 +46,12 @@ class Project(Base):
     last_git_sync_status: Mapped[str] = mapped_column(String(16), default="idle")
     last_git_sync_error: Mapped[str] = mapped_column(Text, default="")
     ingest_paused: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    project_type: Mapped[str] = mapped_column(
+        String(32), default="knowledge_base", server_default="knowledge_base"
+    )
+    case_index_auto_rebuild: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="0"
+    )
 
     @property
     def disk_path(self) -> str:
