@@ -31,6 +31,40 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
+def is_knowledge_base_project(project: Project) -> bool:
+    return getattr(project, "project_type", "knowledge_base") != "case_library"
+
+
+def knowledge_base_projects(projects: list[Project]) -> list[Project]:
+    return [p for p in projects if is_knowledge_base_project(p)]
+
+
+async def validate_agent_project_ids(db: AsyncSession, project_ids: list[str]) -> None:
+    """Agents may only bind knowledge_base projects; case libraries use ticket_project_id."""
+    from fastapi import HTTPException, status
+
+    if not project_ids:
+        return
+    rows = list(
+        (await db.execute(select(Project).where(Project.id.in_(project_ids)))).scalars().all()
+    )
+    found = {p.id for p in rows}
+    missing = set(project_ids) - found
+    if missing:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"Project not found: {', '.join(sorted(missing))}",
+        )
+    case_libs = [p for p in rows if not is_knowledge_base_project(p)]
+    if case_libs:
+        names = ", ".join(p.name for p in case_libs)
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "Agents can only bind knowledge base projects. "
+            f"Case libraries ({names}) must be linked to a main knowledge base via project settings.",
+        )
+
+
 def _hash_key(raw: str) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()
 
@@ -78,6 +112,7 @@ async def create_agent(
     )
     db.add(agent)
 
+    await validate_agent_project_ids(db, project_ids)
     for pid in project_ids:
         db.add(AgentProject(agent_id=agent_id, project_id=pid))
 
@@ -118,6 +153,7 @@ async def update_agent(
         agent.tool_labels = json.dumps(tool_labels, ensure_ascii=False)
 
     if project_ids is not None:
+        await validate_agent_project_ids(db, project_ids)
         await db.execute(delete(AgentProject).where(AgentProject.agent_id == agent.id))
         for pid in project_ids:
             db.add(AgentProject(agent_id=agent.id, project_id=pid))
@@ -139,6 +175,7 @@ async def get_agent_projects(db: AsyncSession, agent_id: str) -> list[Project]:
         select(Project)
         .join(AgentProject, Project.id == AgentProject.project_id)
         .where(AgentProject.agent_id == agent_id)
+        .where(Project.project_type != "case_library")
     )
     return list((await db.execute(stmt)).scalars().all())
 
@@ -166,6 +203,18 @@ async def cross_project_rag(
 ) -> AsyncGenerator[str, None]:
     """RAG across multiple projects, then stream LLM response."""
     cfg = get_config()
+    kb_projects = knowledge_base_projects(projects)
+    if not kb_projects:
+        async for token in llm_client.stream(
+            [
+                {"role": "system", "content": system_prompt or "你是一个知识问答助手。"},
+                {"role": "user", "content": message},
+            ],
+            temperature=cfg.llm.chat_temperature,
+            max_tokens=4096,
+        ):
+            yield token
+        return
 
     # Phase 1+2: parallel hybrid search across all projects
     async def search_one(proj: Project):
@@ -174,7 +223,7 @@ async def cross_project_rag(
         fused = rrf_fusion(kw, vec, message)[:5]
         return proj, fused
 
-    results = await asyncio.gather(*[search_one(p) for p in projects])
+    results = await asyncio.gather(*[search_one(p) for p in kb_projects])
 
     # Phase 3: Cross-project merge — simple interleave by score
     all_results: list[tuple[Project, FusedResult]] = []
@@ -238,9 +287,9 @@ async def cross_project_rag(
 
 
 async def get_ticket_project(db, projects: list[Project]) -> Project | None:
-    """If any main project has a ticket binding, load the ticket project."""
+    """If any bound knowledge base has a ticket binding, load the case library."""
     from sqlalchemy import select as sa_select
-    for proj in projects:
+    for proj in knowledge_base_projects(projects):
         if proj.ticket_project_id:
             ticket = (await db.execute(
                 sa_select(Project).where(Project.id == proj.ticket_project_id)
@@ -270,7 +319,7 @@ async def agent_toolcall_chat(
     )
 
     ctx = ToolContext(
-        main_projects=projects,
+        main_projects=knowledge_base_projects(projects),
         ticket_project=ticket_project,
     )
 

@@ -11,9 +11,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth.deps import get_current_user
 from app.auth.models import User
 from app.case_index.builder import load_manifest, rebuild_case_index, is_case_index_stale
-from app.case_index.search import search_cases
+from app.case_index.search import search_cases, read_case_source
 from app.database import get_db
-from app.projects.service import check_membership, get_project_or_404
+from app.projects.service import check_membership, get_project_or_404, resolve_case_library_project
 
 logger = logging.getLogger(__name__)
 
@@ -131,7 +131,7 @@ async def search_case_index(
             "Case index is not built or not ready",
         )
     results = await search_cases(
-        project.disk_path, body.query, limit=min(body.limit, 5)
+        project.disk_path, body.query, limit=min(body.limit, 20)
     )
     return {
         "results": [
@@ -147,3 +147,26 @@ async def search_case_index(
             for r in results
         ]
     }
+
+
+@router.get("/cases/{case_id}")
+async def get_case_source(
+    project_id: str,
+    case_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Read case raw markdown. Works on case_library or knowledge_base with binding."""
+    await check_membership(db, project_id, user)
+    project = await get_project_or_404(db, project_id)
+    case_project = await resolve_case_library_project(db, project)
+    if case_project is None:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            "No case library configured for this project",
+        )
+
+    result = read_case_source(case_project.disk_path, case_id)
+    if result is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Case not found: {case_id}")
+    return result

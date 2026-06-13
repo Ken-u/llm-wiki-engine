@@ -15,6 +15,11 @@ import logging
 from dataclasses import dataclass
 from typing import AsyncGenerator
 
+from app.agents.context_compress import (
+    compress_agent_context,
+    resolve_prompt_tokens,
+    should_compress,
+)
 from app.agents.tools import ToolContext, execute_tool, get_tool_definitions
 from app.config import get_config
 from app.llm.client import complete_with_tools, LLMResponse, stream as llm_stream
@@ -22,6 +27,7 @@ from app.llm.client import complete_with_tools, LLMResponse, stream as llm_strea
 logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_TOOL_CALLS = 20
+COMPRESS_CONTEXT_TOOL = "compress_context"
 
 REJECT_MSG = "已达到最大工具调用次数，请立即根据目前已获取的数据输出结果。"
 
@@ -46,6 +52,11 @@ def _build_system_prompt(custom_prompt: str, has_ticket: bool) -> str:
             "- 只有需要具体排查步骤、日志、完整上下文时才调用 read_ticket_case。",
             "- 不要一次读取多个案例全文。",
             "- 使用案例库时，回答末尾列出 case_id + title。",
+            "- 案例内容只能通过 search_ticket_cases 和 read_ticket_case 获取。",
+            "- 禁止对案例库文件使用 read_raw、grep_raw、read_wiki_page。",
+            "- read_ticket_case 返回的字段中不包含本地文件路径，不要尝试读取案例 raw 源文件。",
+            "- read_ticket_case 的 section 参数用于指定章节（如'处理过程'、'最终处理方案'），不是 session。",
+            "- 搜索结果的摘要足够回答时，不要调用 read_ticket_case。",
         ])
 
     policy = "\n".join([
@@ -83,11 +94,20 @@ def _truncate_for_debug(result: dict, limit: int = DEFAULT_DEBUG_RESULT_LIMIT) -
     return out
 
 
-def _done_event(traces: list[ToolTrace]) -> str:
-    return json.dumps({
+def _done_event(
+    traces: list[ToolTrace],
+    *,
+    compressed_history: list[dict] | None = None,
+    context_compressed: bool = False,
+) -> str:
+    payload: dict = {
         "done": True,
         "tool_traces": [{"name": t.name, "arguments": t.arguments} for t in traces],
-    })
+        "context_compressed": context_compressed,
+    }
+    if compressed_history is not None:
+        payload["compressed_history"] = compressed_history
+    return json.dumps(payload)
 
 
 async def run_agent_turn(
@@ -108,10 +128,14 @@ async def run_agent_turn(
     """
     full_system = _build_system_prompt(system_prompt, ctx.ticket_project is not None)
     tool_defs = get_tool_definitions(ctx)
+    cfg = get_config().llm
 
     messages: list[dict] = [{"role": "system", "content": full_system}]
-    messages.extend(history[-20:])
+    messages.extend(history)
     messages.append({"role": "user", "content": message})
+
+    persisted_history = list(history)
+    context_compressed = False
 
     traces: list[ToolTrace] = []
     used_ticket = False
@@ -123,13 +147,68 @@ async def run_agent_turn(
             messages, tool_defs, max_tokens=4096,
         )
 
+        prompt_tokens, usage_source = resolve_prompt_tokens(
+            messages,
+            api_prompt_tokens=resp.usage.prompt_tokens if resp.usage else None,
+        )
+        if usage_source == "estimated":
+            logger.debug("Using estimated prompt_tokens=%d for context compression", prompt_tokens)
+
+        needs_compress = should_compress(
+            prompt_tokens,
+            cfg.max_context_size,
+            cfg.context_compress_threshold,
+        )
+        if needs_compress:
+            yield json.dumps({
+                "tool_call": {
+                    "name": COMPRESS_CONTEXT_TOOL,
+                    "arguments": {"prompt_tokens": prompt_tokens, "usage_source": usage_source},
+                },
+            })
+
+        compress_result = await compress_agent_context(
+            messages,
+            persisted_history,
+            prompt_tokens=prompt_tokens,
+            max_context_size=cfg.max_context_size,
+            threshold=cfg.context_compress_threshold,
+            target=cfg.context_compress_target,
+        )
+
+        if needs_compress:
+            yield json.dumps({
+                "tool_result": {
+                    "name": COMPRESS_CONTEXT_TOOL,
+                    "result": {
+                        "compressed": compress_result.compressed,
+                        "prompt_tokens": prompt_tokens,
+                        "usage_source": usage_source,
+                    },
+                },
+            })
+
+        if compress_result.compressed:
+            messages = compress_result.messages
+            persisted_history = compress_result.persisted_history
+            context_compressed = True
+            logger.info(
+                "Context compressed after %s prompt_tokens=%d",
+                usage_source,
+                prompt_tokens,
+            )
+
         if not resp.tool_calls:
             if resp.content:
                 resp_content = resp.content
                 if used_ticket and "参考了案例库" not in resp.content:
                     resp_content += "\n\n> 以上结论参考了案例库。"
                 yield json.dumps({"token": resp_content})
-            yield _done_event(traces)
+            yield _done_event(
+                traces,
+                compressed_history=persisted_history if context_compressed else None,
+                context_compressed=context_compressed,
+            )
             return
 
         # Build assistant message
@@ -176,12 +255,15 @@ async def run_agent_turn(
                 tool_call_count += 1
 
     # Exhausted all rounds — hard fallback, stream without tools
-    cfg = get_config()
     async for token in llm_stream(
         messages,
-        temperature=cfg.llm.chat_temperature,
+        temperature=cfg.chat_temperature,
         max_tokens=4096,
     ):
         yield json.dumps({"token": token})
 
-    yield _done_event(traces)
+    yield _done_event(
+        traces,
+        compressed_history=persisted_history if context_compressed else None,
+        context_compressed=context_compressed,
+    )

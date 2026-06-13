@@ -125,6 +125,7 @@ async def _export_config_bundle(db) -> dict:
                 "created_by": p.created_by,
                 "created_at": _dt(p.created_at),
                 "ticket_project_id": p.ticket_project_id,
+                "project_type": p.project_type,
                 "feedback_enabled": p.feedback_enabled,
                 "git_repo_url": p.git_repo_url,
                 "git_branch": p.git_branch,
@@ -220,6 +221,7 @@ async def _restore_config_bundle(db, bundle: dict) -> dict[str, int]:
             created_by=row["created_by"],
             created_at=_parse_dt(row.get("created_at")),
             ticket_project_id=None,
+            project_type=row.get("project_type", "knowledge_base"),
             feedback_enabled=row.get("feedback_enabled", True),
             git_repo_url=row.get("git_repo_url", ""),
             git_branch=row.get("git_branch", "main"),
@@ -265,7 +267,13 @@ async def _restore_config_bundle(db, bundle: dict) -> dict[str, int]:
         ))
     await db.flush()
 
+    project_types = {
+        row["id"]: row.get("project_type", "knowledge_base")
+        for row in bundle["projects"]
+    }
     for row in bundle["agent_projects"]:
+        if project_types.get(row["project_id"]) == "case_library":
+            continue
         db.add(AgentProject(
             agent_id=row["agent_id"],
             project_id=row["project_id"],

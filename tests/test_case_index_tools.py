@@ -118,6 +118,57 @@ def test_search_ticket_cases_with_index(tmp_path):
     assert len(result["results"]) == 1
     assert result["results"][0]["case_id"] == "5001"
     assert "usage_hint" in result
+    assert "read_raw" in result["usage_hint"]
+
+
+def _write_case_source(project_dir, case_id="5001"):
+    src = Path(project_dir) / "raw" / "sources"
+    src.mkdir(parents=True, exist_ok=True)
+    md = f"""---
+title: Test Case
+ticket_id: "{case_id}"
+---
+
+# 案例概述
+
+## 1. 问题摘要
+Test problem detail
+
+## 6. 处理过程
+Step-by-step diagnosis
+"""
+    (src / f"{case_id}.md").write_text(md, encoding="utf-8")
+
+
+def test_read_ticket_case_integration_no_source_path(tmp_path):
+    proj = _make_project(tmp_path)
+    _write_manifest(str(tmp_path))
+    _write_cases_jsonl(str(tmp_path))
+    _write_case_source(str(tmp_path))
+    ctx = ToolContext(main_projects=[], ticket_project=proj)
+
+    result = asyncio.run(execute_tool(
+        "read_ticket_case", {"case_id": "5001"}, ctx
+    ))
+
+    assert result["source_type"] == "ticket_case_index"
+    assert "sections" in result
+    assert "source_path" not in result
+
+
+def test_read_ticket_case_session_alias(tmp_path):
+    proj = _make_project(tmp_path)
+    _write_manifest(str(tmp_path))
+    _write_cases_jsonl(str(tmp_path))
+    _write_case_source(str(tmp_path))
+    ctx = ToolContext(main_projects=[], ticket_project=proj)
+
+    result = asyncio.run(execute_tool(
+        "read_ticket_case", {"case_id": "5001", "session": "处理过程"}, ctx
+    ))
+
+    assert "content" in result
+    assert "diagnosis" in result["content"].lower() or "Step-by-step" in result["content"]
 
 
 def test_read_ticket_case_found(tmp_path):
@@ -165,6 +216,9 @@ def test_system_prompt_includes_case_search_policy():
     assert "read_ticket_case" in prompt
     assert "read_ticket_page" not in prompt
     assert "case_id" in prompt
+    assert "read_raw" in prompt
+    assert "grep_raw" in prompt
+    assert "session" in prompt
 
 
 def test_system_prompt_no_ticket_has_no_case_policy():

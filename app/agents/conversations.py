@@ -61,10 +61,18 @@ def append_turn(
     conversation_id: str | None,
     user_message: str,
     assistant_answer: str,
+    compressed_history: list[dict] | None = None,
 ) -> dict:
     conv_id = conversation_id or str(uuid.uuid4())
     messages_file = _messages_path(base_dir, agent_id, user_id, conv_id)
-    messages = _load_json(messages_file, [])
+    if compressed_history is not None:
+        messages = [
+            {"role": m["role"], "content": m["content"]}
+            for m in compressed_history
+            if m.get("role") in ("user", "assistant")
+        ]
+    else:
+        messages = _load_json(messages_file, [])
     messages.extend([
         {"role": "user", "content": user_message},
         {"role": "assistant", "content": assistant_answer, "rawContent": assistant_answer},

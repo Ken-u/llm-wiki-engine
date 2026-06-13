@@ -237,6 +237,22 @@ async def update_project(
     return project
 
 
+async def resolve_case_library_project(
+    db: AsyncSession, project: Project
+) -> Project | None:
+    """Return the case library project for reads: self or bound ticket project."""
+    if project.project_type == "case_library":
+        return project
+    if not project.ticket_project_id:
+        return None
+    ticket = (
+        await db.execute(select(Project).where(Project.id == project.ticket_project_id))
+    ).scalar_one_or_none()
+    if ticket is None or ticket.project_type != "case_library":
+        return None
+    return ticket
+
+
 async def delete_project(db: AsyncSession, project: Project) -> None:
     import shutil
 

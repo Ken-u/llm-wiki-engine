@@ -149,7 +149,10 @@ def get_tool_definitions(ctx: ToolContext) -> list[dict]:
                         "type": "object",
                         "properties": {
                             "case_id": {"type": "string", "description": "案例 ID"},
-                            "section": {"type": "string", "description": "章节名，如'根因分析'、'解决方案'。不传则返回压缩全文。"},
+                            "section": {
+                                "type": "string",
+                                "description": "章节名，如'处理过程'、'最终处理方案'、'原因分析'。不传则返回全部章节摘要。",
+                            },
                         },
                         "required": ["case_id"],
                     },
@@ -364,14 +367,22 @@ async def execute_tool(name: str, arguments: dict, ctx: ToolContext) -> dict:
                 }
                 for r in results
             ],
-            "usage_hint": "If the summaries are enough, answer directly. Call read_ticket_case only when details are required.",
+            "usage_hint": (
+                "If the summaries are enough, answer directly. "
+                "Use read_ticket_case(case_id, section) for section details. "
+                "Do NOT use read_raw, grep_raw, or read_wiki_page for case content."
+            ),
         }
 
     if name == "read_ticket_case":
         if ctx.ticket_project is None:
             return {"error": "Ticket wiki not configured for this project."}
         case_id = arguments.get("case_id", "")
-        section = arguments.get("section")
+        section = (
+            arguments.get("section")
+            or arguments.get("session")
+            or arguments.get("section_name")
+        )
         result = read_case(ctx.ticket_project.disk_path, case_id, section=section)
         if result is None:
             return {"error": f"Case not found: {case_id}"}

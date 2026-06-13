@@ -182,11 +182,20 @@ class ToolCallRequest:
 
 
 @dataclass
+class TokenUsage:
+    """Token usage reported by the LLM provider."""
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+
+
+@dataclass
 class LLMResponse:
     """Structured LLM response that may contain text, tool calls, or both."""
     content: str | None
     tool_calls: list[ToolCallRequest]
     finish_reason: str | None
+    usage: TokenUsage | None = None
 
 
 async def complete_with_tools(
@@ -221,8 +230,18 @@ async def complete_with_tools(
                 arguments=tc.function.arguments,
             ))
 
+    usage = None
+    if getattr(resp, "usage", None):
+        u = resp.usage
+        usage = TokenUsage(
+            prompt_tokens=getattr(u, "prompt_tokens", 0) or 0,
+            completion_tokens=getattr(u, "completion_tokens", 0) or 0,
+            total_tokens=getattr(u, "total_tokens", 0) or 0,
+        )
+
     return LLMResponse(
         content=msg.content,
         tool_calls=tool_calls,
         finish_reason=choice.finish_reason,
+        usage=usage,
     )

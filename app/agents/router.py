@@ -18,6 +18,7 @@ from app.auth.deps import get_current_user
 from app.auth.models import User
 from app.config import get_config
 from app.database import get_db
+from app.projects.models import Project
 
 router = APIRouter(prefix="/api/agents", tags=["agents"])
 
@@ -99,7 +100,12 @@ def _parse_tool_labels(agent: Agent) -> dict[str, str]:
 
 
 async def _agent_project_ids(db: AsyncSession, agent_id: str) -> list[str]:
-    stmt = select(AgentProject.project_id).where(AgentProject.agent_id == agent_id)
+    stmt = (
+        select(AgentProject.project_id)
+        .join(Project, Project.id == AgentProject.project_id)
+        .where(AgentProject.agent_id == agent_id)
+        .where(Project.project_type != "case_library")
+    )
     return list((await db.execute(stmt)).scalars().all())
 
 
@@ -310,6 +316,7 @@ async def agent_chat(
                     conversation_id=persisted_id,
                     user_message=body.message,
                     assistant_answer="".join(collected_tokens),
+                    compressed_history=payload.get("compressed_history"),
                 )
                 persisted_id = conv["id"]
                 payload["conversation_id"] = persisted_id

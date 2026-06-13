@@ -117,7 +117,7 @@ async def search_cases(
     if manifest is None or not manifest.is_ready:
         return []
 
-    limit = min(limit, 5)
+    limit = min(limit, 20)
 
     fts_hits = _search_fts(project_dir, query, limit)
     vec_hits = await _search_vector(project_dir, query, limit)
@@ -169,34 +169,93 @@ async def search_cases(
 def read_case(
     project_dir: str, case_id: str, *, section: str | None = None
 ) -> dict | None:
-    """Read a case record, optionally filtered to a specific section."""
+    """Read a case record for agent consumption, optionally filtered to a section."""
+    from app.case_index.parser import (
+        _split_sections,
+        match_section_query,
+        sections_to_agent_dict,
+        normalize_heading,
+    )
+    from app.wiki.frontmatter import parse_frontmatter
+
     cases = _load_cases(project_dir)
     rec = cases.get(case_id)
     if rec is None:
         return None
 
-    if section is not None:
-        source = Path(project_dir) / rec.source_path
-        if not source.exists():
-            return {"case_id": case_id, "error": f"Source file not found: {rec.source_path}"}
-        text = source.read_text(encoding="utf-8", errors="replace")
-        from app.case_index.parser import _split_sections, SECTION_MAP
-        from app.wiki.frontmatter import parse_frontmatter
-        _, body = parse_frontmatter(text)
-        sections = _split_sections(body)
-        normalized = SECTION_MAP.get(section.lower(), section.lower())
-        for heading, field_name, content in sections:
-            if heading.lower() == section.lower() or field_name == normalized:
-                return {
-                    "case_id": case_id,
-                    "title": rec.title,
-                    "section": heading,
-                    "content": content[:3000],
-                }
-        return {"case_id": case_id, "error": f"Section not found: {section}"}
+    source = Path(project_dir) / rec.source_path
+    if not source.exists():
+        return {
+            "source_type": "ticket_case_index",
+            "case_id": case_id,
+            "error": f"Case source not available for case_id: {case_id}",
+        }
 
-    d = rec.to_dict()
-    for key in ("problem_summary", "root_cause", "resolution", "diagnosis_steps"):
-        if len(d.get(key, "")) > 1000:
-            d[key] = d[key][:1000]
-    return d
+    text = source.read_text(encoding="utf-8", errors="replace")
+    _, body = parse_frontmatter(text)
+    parsed_sections = _split_sections(body)
+    available, sections_dict = sections_to_agent_dict(parsed_sections)
+
+    if section is not None:
+        matched = match_section_query(section, parsed_sections)
+        if matched is None:
+            return {
+                "source_type": "ticket_case_index",
+                "case_id": case_id,
+                "title": rec.title,
+                "error": f"Section not found: {section}",
+                "available_sections": available,
+            }
+        heading, _field_name, content = matched
+        return {
+            "source_type": "ticket_case_index",
+            "case_id": case_id,
+            "title": rec.title,
+            "section": normalize_heading(heading),
+            "content": content[:6000],
+        }
+
+    return {
+        "source_type": "ticket_case_index",
+        "case_id": rec.case_id,
+        "title": rec.title,
+        "domain": rec.domain,
+        "tags": rec.tags,
+        "available_sections": available,
+        "sections": sections_dict,
+    }
+
+
+def _find_case_source_path(project_dir: str, case_id: str) -> Path | None:
+    cases = _load_cases(project_dir)
+    rec = cases.get(case_id)
+    if rec is not None:
+        candidate = Path(project_dir) / rec.source_path
+        if candidate.exists():
+            return candidate
+
+    src = Path(project_dir) / "raw" / "sources"
+    if not src.exists():
+        return None
+    for path in src.rglob("*.md"):
+        if path.is_file() and path.stem == case_id:
+            return path
+    return None
+
+
+def read_case_source(project_dir: str, case_id: str) -> dict | None:
+    """Read case raw markdown source for UI preview."""
+    source_path = _find_case_source_path(project_dir, case_id)
+    if source_path is None:
+        return None
+
+    raw_content = source_path.read_text(encoding="utf-8", errors="replace")
+    detail = read_case(project_dir, case_id)
+    title = detail.get("title", case_id) if detail else case_id
+
+    return {
+        "source_type": "ticket_case_index",
+        "case_id": case_id,
+        "title": title,
+        "raw_content": raw_content,
+    }

@@ -81,22 +81,80 @@ def test_search_cases_no_index_returns_empty(tmp_path):
     assert results == []
 
 
-def test_read_case_returns_record(tmp_path):
+def test_read_case_returns_agent_friendly_record(tmp_path):
     _setup_and_build(tmp_path)
     result = read_case(str(tmp_path), "2001")
     assert result is not None
+    assert result["source_type"] == "ticket_case_index"
     assert result["case_id"] == "2001"
-    assert "problem_summary" in result
+    assert "sections" in result
+    assert "available_sections" in result
+    assert "source_path" not in result
+    assert "raw_text_hash" not in result
+    assert result["sections"]["问题摘要"]
 
 
 def test_read_case_with_section(tmp_path):
     _setup_and_build(tmp_path)
     result = read_case(str(tmp_path), "2001", section="根因分析")
     assert result is not None
+    assert result["source_type"] == "ticket_case_index"
     assert "content" in result
+    assert "OOM" in result["content"]
+
+
+def test_read_case_fuzzy_section_numbered_heading(tmp_path):
+    from tests.test_case_index_parser import CASE_MARKDOWN_MD
+
+    src = tmp_path / "raw" / "sources"
+    src.mkdir(parents=True, exist_ok=True)
+    (src / "3001.md").write_text(CASE_MARKDOWN_MD, encoding="utf-8")
+    (tmp_path / ".llm-wiki").mkdir(parents=True, exist_ok=True)
+    with patch("app.case_index.builder._get_embeddings", new_callable=AsyncMock) as mock_embed, \
+         patch("app.case_index.builder.get_config") as mock_cfg:
+        mock_embed.side_effect = lambda texts: _fake_embeddings(texts)
+        mock_cfg.return_value = _mock_config()
+        asyncio.run(rebuild_case_index(str(tmp_path)))
+
+    result = read_case(str(tmp_path), "2001", section="处理过程")
+    assert result is not None
+    assert "content" in result
+    assert "low memory killer" in result["content"]
+
+
+def test_read_case_section_not_found_lists_available(tmp_path):
+    _setup_and_build(tmp_path)
+    result = read_case(str(tmp_path), "2001", section="不存在的章节")
+    assert result is not None
+    assert "error" in result
+    assert "available_sections" in result
 
 
 def test_read_case_not_found(tmp_path):
     _setup_and_build(tmp_path)
     result = read_case(str(tmp_path), "nonexistent")
     assert result is None
+
+
+def test_read_case_source_returns_raw_markdown(tmp_path):
+    _setup_and_build(tmp_path)
+    from app.case_index.search import read_case_source
+
+    result = read_case_source(str(tmp_path), "2001")
+    assert result is not None
+    assert result["case_id"] == "2001"
+    assert "raw_content" in result
+    assert "Boot Failure Case" in result["raw_content"]
+    assert "source_path" not in result
+
+
+def test_read_case_source_finds_nested_path(tmp_path):
+    from app.case_index.search import read_case_source
+
+    src = tmp_path / "raw" / "sources" / "gms"
+    src.mkdir(parents=True)
+    (src / "606125.md").write_text(SAMPLE_MD, encoding="utf-8")
+
+    result = read_case_source(str(tmp_path), "606125")
+    assert result is not None
+    assert "Boot Failure Case" in result["raw_content"]

@@ -254,6 +254,7 @@ async def public_agent_chat(
                     conversation_id=persisted_id,
                     user_message=body.message,
                     assistant_answer="".join(collected_tokens),
+                    compressed_history=payload.get("compressed_history"),
                 )
                 persisted_id = conv["id"]
                 payload["conversation_id"] = persisted_id
@@ -341,3 +342,30 @@ async def public_agent_wiki_page(
             return {"path": path, "content": content, "meta": meta.raw}
 
     raise HTTPException(status.HTTP_404_NOT_FOUND, "Page not found")
+
+
+@router.get("/{agent_id}/ticket-cases/{case_id}")
+async def public_agent_ticket_case(
+    agent_id: str,
+    case_id: str,
+    db: AsyncSession = Depends(get_db),
+    authorization: str | None = Header(None),
+):
+    """Read a case source file from an agent's bound case library."""
+    agent = await _verify_public_agent_access(db, agent_id, authorization)
+    projects = await service.get_agent_projects(db, agent.id)
+    if not projects:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Agent has no projects")
+
+    from app.case_index.search import read_case_source
+    from app.projects.service import resolve_case_library_project
+
+    for proj in projects:
+        case_project = await resolve_case_library_project(db, proj)
+        if case_project is None:
+            continue
+        result = read_case_source(case_project.disk_path, case_id)
+        if result is not None:
+            return result
+
+    raise HTTPException(status.HTTP_404_NOT_FOUND, f"Case not found: {case_id}")

@@ -9,12 +9,19 @@ from pathlib import Path
 from app.case_index.models import CaseRecord, CaseChunk
 from app.wiki.frontmatter import parse_frontmatter
 
+_NUMBERED_HEADING_RE = re.compile(r"^\d+\.\s*")
+
 _SYNONYMS: dict[str, list[str]] = {
     "overview": ["案例概述", "概述", "overview"],
     "problem_summary": ["问题摘要", "问题描述", "问题概述", "故障描述", "故障现象", "problem summary"],
+    "scope": ["适用范围", "scope"],
+    "symptoms": ["问题现象", "symptoms"],
+    "key_facts": ["关键信息", "key facts", "key_facts"],
     "root_cause": ["根因分析", "原因分析", "根因", "原因", "root cause"],
-    "diagnosis_steps": ["处理过程", "排查过程", "诊断步骤", "排查步骤", "处理步骤", "diagnosis"],
-    "resolution": ["解决方案", "修复方案", "解决办法", "修复措施", "处理方案", "resolution"],
+    "diagnosis_steps": ["处理过程", "排查过程", "诊断步骤", "排查步骤", "处理步骤", "diagnosis", "process"],
+    "resolution": ["解决方案", "修复方案", "解决办法", "修复措施", "处理方案", "最终处理方案", "resolution"],
+    "rules": ["结论与规则", "规则", "rules"],
+    "dialog_excerpt": ["原始对话摘录", "对话摘录", "dialog excerpt", "dialog_excerpt"],
     "impact": ["影响范围", "影响面", "影响", "impact"],
     "logs": ["相关日志", "日志", "logs", "log"],
     "evidence": ["证据", "evidence"],
@@ -25,10 +32,29 @@ for _field_name, _titles in _SYNONYMS.items():
     for _t in _titles:
         SECTION_MAP[_t.lower()] = _field_name
 
+# Human-readable labels for agent-facing section keys
+SECTION_LABELS: dict[str, str] = {
+    "problem_summary": "问题摘要",
+    "scope": "适用范围",
+    "symptoms": "问题现象",
+    "key_facts": "关键信息",
+    "root_cause": "原因分析",
+    "diagnosis_steps": "处理过程",
+    "resolution": "最终处理方案",
+    "rules": "结论与规则",
+    "dialog_excerpt": "原始对话摘录",
+    "overview": "案例概述",
+}
+
 _HEADING_RE = re.compile(r"^(#{1,3})\s+(.+)", re.MULTILINE)
 
 MAX_FIELD_CHARS = 500
 MAX_CHUNK_CHARS = 800
+
+
+def normalize_heading(heading: str) -> str:
+    """Strip leading numbered prefix like '1. ' from a markdown heading."""
+    return _NUMBERED_HEADING_RE.sub("", heading.strip())
 
 
 def generate_case_id(source_path: str) -> str:
@@ -45,10 +71,54 @@ def _split_sections(body: str) -> list[tuple[str, str, str]]:
         start = m.end()
         end = matches[i + 1].start() if i + 1 < len(matches) else len(body)
         content = body[start:end].strip()
-        normalized = SECTION_MAP.get(heading.lower(), "")
+        normalized = SECTION_MAP.get(normalize_heading(heading).lower(), "")
         sections.append((heading, normalized, content))
 
     return sections
+
+
+def sections_to_agent_dict(
+    sections: list[tuple[str, str, str]], *, max_chars: int = 2000
+) -> tuple[list[str], dict[str, str]]:
+    """Build available_sections (raw headings) and sections dict (label -> content)."""
+    available: list[str] = []
+    result: dict[str, str] = {}
+    for heading, field_name, content in sections:
+        if not content.strip():
+            continue
+        available.append(heading)
+        label = SECTION_LABELS.get(field_name, normalize_heading(heading))
+        if label in result:
+            result[label] = result[label] + "\n\n" + content[:max_chars]
+        else:
+            result[label] = content[:max_chars]
+    return available, result
+
+
+def match_section_query(
+    query: str, sections: list[tuple[str, str, str]]
+) -> tuple[str, str, str] | None:
+    """Fuzzy-match a section query against parsed sections. Returns (heading, field, content)."""
+    q = query.strip().lower()
+    q_normalized = normalize_heading(query).lower()
+    mapped_field = SECTION_MAP.get(q_normalized)
+
+    for heading, field_name, content in sections:
+        if not content.strip():
+            continue
+        h_norm = normalize_heading(heading).lower()
+        if (
+            heading.lower() == q
+            or h_norm == q
+            or h_norm == q_normalized
+            or (q_normalized and q_normalized in h_norm)
+            or (h_norm and h_norm in q_normalized)
+            or (field_name and field_name.lower() == q)
+            or (mapped_field and mapped_field == field_name)
+        ):
+            return heading, field_name, content
+
+    return None
 
 
 def parse_case_markdown(
@@ -68,9 +138,14 @@ def parse_case_markdown(
 
     field_values: dict[str, str] = {
         "problem_summary": "",
+        "scope": "",
+        "symptoms": "",
+        "key_facts": "",
         "root_cause": "",
-        "resolution": "",
         "diagnosis_steps": "",
+        "resolution": "",
+        "rules": "",
+        "dialog_excerpt": "",
     }
 
     for _heading, field_name, content in sections:
@@ -93,9 +168,14 @@ def parse_case_markdown(
         source_path=source_path,
         updated_at=updated_at,
         problem_summary=field_values["problem_summary"],
+        scope=field_values["scope"],
+        symptoms=field_values["symptoms"],
+        key_facts=field_values["key_facts"],
         root_cause=field_values["root_cause"],
         resolution=field_values["resolution"],
         diagnosis_steps=field_values["diagnosis_steps"],
+        rules=field_values["rules"],
+        dialog_excerpt=field_values["dialog_excerpt"],
         affected_modules=affected_modules,
         raw_text_hash=raw_hash,
     )

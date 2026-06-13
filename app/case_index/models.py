@@ -19,15 +19,28 @@ class CaseRecord:
     root_cause: str
     resolution: str
     diagnosis_steps: str
-    affected_modules: list[str]
-    raw_text_hash: str
+    scope: str = ""
+    symptoms: str = ""
+    key_facts: str = ""
+    rules: str = ""
+    dialog_excerpt: str = ""
+    affected_modules: list[str] = field(default_factory=list)
+    raw_text_hash: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> CaseRecord:
-        return cls(**{k: d[k] for k in cls.__dataclass_fields__ if k in d})
+        kwargs: dict[str, Any] = {}
+        for k in cls.__dataclass_fields__:
+            if k in d:
+                kwargs[k] = d[k]
+            elif k in ("tags", "affected_modules"):
+                kwargs[k] = []
+            else:
+                kwargs[k] = ""
+        return cls(**kwargs)
 
 
 @dataclass

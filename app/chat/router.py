@@ -98,36 +98,48 @@ async def chat(
         collected_traces: list[dict] = []
         persisted = False
 
-        async def persist_messages() -> None:
+        async def persist_messages(*, compressed_history: list[dict] | None = None) -> None:
             nonlocal persisted
             if persisted:
                 return
             persisted = True
             assistant_response = "".join(collected_tokens)
 
-            history.append({
-                "role": "user",
-                "content": body.message,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            })
-            history.append({
-                "role": "assistant",
-                "content": assistant_response,
-                "rawContent": assistant_response,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            })
-            await _save_messages(project.disk_path, conv_id, history)
+            if compressed_history is not None:
+                llm_base = [
+                    {"role": m["role"], "content": m["content"]}
+                    for m in compressed_history
+                    if m.get("role") in ("user", "assistant")
+                ]
+            else:
+                llm_base = [
+                    {"role": m["role"], "content": m["content"]}
+                    for m in history
+                    if m.get("role") in ("user", "assistant")
+                ]
+
+            now = datetime.now(timezone.utc).isoformat()
+            new_messages = llm_base + [
+                {"role": "user", "content": body.message, "timestamp": now},
+                {
+                    "role": "assistant",
+                    "content": assistant_response,
+                    "rawContent": assistant_response,
+                    "timestamp": now,
+                },
+            ]
+            await _save_messages(project.disk_path, conv_id, new_messages)
 
             convs = await _load_conversations(project.disk_path)
             existing = next((c for c in convs if c["id"] == conv_id), None)
             if existing:
-                existing["message_count"] = len(history)
+                existing["message_count"] = len(new_messages)
             else:
                 convs.append({
                     "id": conv_id,
                     "title": body.message[:80],
                     "created_at": datetime.now(timezone.utc).isoformat(),
-                    "message_count": len(history),
+                    "message_count": len(new_messages),
                     "user_id": user.id,
                 })
             await _save_conversations(project.disk_path, convs)
@@ -144,7 +156,9 @@ async def chat(
                 collected_tokens.append(payload["token"])
             if payload.get("done"):
                 collected_traces[:] = payload.get("tool_traces", [])
-                await persist_messages()
+                await persist_messages(
+                    compressed_history=payload.get("compressed_history"),
+                )
                 payload["conversation_id"] = conv_id
             yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
