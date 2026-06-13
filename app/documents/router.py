@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, File, UploadFile, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, UploadFile, HTTPException, status
 from fastapi.responses import PlainTextResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,6 +19,7 @@ router = APIRouter(prefix="/api/projects/{project_id}/documents", tags=["documen
 async def upload_document(
     project_id: str,
     file: UploadFile = File(...),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -33,6 +34,14 @@ async def upload_document(
         raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "File too large (max 50MB)")
 
     dest = await service.save_uploaded_file(project, file.filename, content)
+
+    if project.project_type == "case_library":
+        from app.case_index.builder import mark_case_index_stale, rebuild_case_index
+        if project.case_index_auto_rebuild:
+            background_tasks.add_task(rebuild_case_index, project.disk_path)
+        else:
+            mark_case_index_stale(project.disk_path)
+
     return {"filename": file.filename, "path": str(dest), "size": len(content)}
 
 
