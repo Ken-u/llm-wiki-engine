@@ -157,6 +157,11 @@ async def trigger_ingest(
 ):
     await check_membership(db, project_id, user)
     project = await get_project_or_404(db, project_id)
+    if project.project_type == "case_library":
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "Wiki compilation is not available for case_library projects. Use case index rebuild instead.",
+        )
 
     source_dir = Path(project.disk_path) / "raw" / "sources"
     requested_files = body.source_files or ([body.source_file] if body.source_file else None)
@@ -218,6 +223,11 @@ async def enqueue_ingest_files(
 ):
     await check_membership(db, project_id, user)
     project = await get_project_or_404(db, project_id)
+    if project.project_type == "case_library":
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "Wiki compilation is not available for case_library projects. Use case index rebuild instead.",
+        )
     items = await _build_file_items(project, db)
     by_name = {item.source_file: item for item in items}
 

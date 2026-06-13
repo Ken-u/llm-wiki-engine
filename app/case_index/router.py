@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.deps import get_current_user
 from app.auth.models import User
-from app.case_index.builder import load_manifest, rebuild_case_index
+from app.case_index.builder import load_manifest, rebuild_case_index, is_case_index_stale
 from app.case_index.search import search_cases
 from app.database import get_db
 from app.projects.service import check_membership, get_project_or_404
@@ -20,6 +20,14 @@ logger = logging.getLogger(__name__)
 router = APIRouter(
     prefix="/api/projects/{project_id}/case-index", tags=["case-index"]
 )
+
+
+def _require_case_library(project) -> None:
+    if getattr(project, "project_type", "knowledge_base") != "case_library":
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "Case index operations are only available for case_library projects",
+        )
 
 
 class SearchRequest(BaseModel):
@@ -45,11 +53,27 @@ async def case_index_status(
 ):
     await check_membership(db, project_id, user)
     project = await get_project_or_404(db, project_id)
+    _require_case_library(project)
+
+    if _rebuild_locks.get(project_id):
+        manifest = load_manifest(project.disk_path)
+        return StatusResponse(
+            status="building",
+            source_count=manifest.source_count if manifest else 0,
+            case_count=manifest.case_count if manifest else 0,
+            chunk_count=manifest.chunk_count if manifest else 0,
+        )
+
     manifest = load_manifest(project.disk_path)
     if manifest is None:
-        return StatusResponse(status="not_built")
+        return StatusResponse(status="missing")
+
+    effective_status = manifest.status
+    if manifest.status == "ready" and is_case_index_stale(project.disk_path):
+        effective_status = "stale"
+
     return StatusResponse(
-        status=manifest.status,
+        status=effective_status,
         built_at=manifest.built_at,
         source_count=manifest.source_count,
         case_count=manifest.case_count,
@@ -81,6 +105,7 @@ async def trigger_rebuild(
 ):
     await check_membership(db, project_id, user)
     project = await get_project_or_404(db, project_id)
+    _require_case_library(project)
     if _rebuild_locks.get(project_id):
         raise HTTPException(
             status.HTTP_409_CONFLICT, "Rebuild already in progress"
@@ -98,6 +123,7 @@ async def search_case_index(
 ):
     await check_membership(db, project_id, user)
     project = await get_project_or_404(db, project_id)
+    _require_case_library(project)
     manifest = load_manifest(project.disk_path)
     if manifest is None or not manifest.is_ready:
         raise HTTPException(

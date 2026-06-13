@@ -47,6 +47,7 @@ async def create_project(
     slug: str,
     description: str,
     user: User,
+    as_case_library: bool = False,
     case_library_main_project_id: str | None = None,
 ) -> Project:
     exists = (await db.execute(select(Project).where(Project.slug == slug))).scalar_one_or_none()
@@ -80,6 +81,8 @@ async def create_project(
     (base_dir / ".llm-wiki" / "ingest-cache.json").write_text("{}", encoding="utf-8")
     (base_dir / ".llm-wiki" / "ingest-queue.json").write_text("[]", encoding="utf-8")
 
+    project_type = "case_library" if (as_case_library or case_library_main_project_id) else "knowledge_base"
+
     proj = Project(
         id=project_id,
         name=name,
@@ -87,6 +90,7 @@ async def create_project(
         description=description,
         _disk_path="",
         created_by=user.id,
+        project_type=project_type,
     )
     db.add(proj)
     member = ProjectMember(project_id=project_id, user_id=user.id, role="owner")
@@ -162,6 +166,9 @@ async def update_project(
     description: str | None = None,
     ticket_project_id: str | None = ...,
     feedback_enabled: bool | None = None,
+    project_type: str | None = None,
+    case_index_auto_rebuild: bool | None = None,
+    ingest_paused: bool | None = None,
     git_repo_url: str | None = None,
     git_branch: str | None = None,
     git_username: str | None = None,
@@ -180,15 +187,34 @@ async def update_project(
     if feedback_enabled is not None:
         project.feedback_enabled = feedback_enabled
 
+    if project_type is not None:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "project_type cannot be changed after creation"
+        )
+
+    if case_index_auto_rebuild is not None:
+        if project.project_type != "case_library":
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "case_index_auto_rebuild is only available for case_library projects"
+            )
+        project.case_index_auto_rebuild = case_index_auto_rebuild
+
+    if ingest_paused is not None:
+        project.ingest_paused = ingest_paused
+
     if ticket_project_id is not ...:
         if ticket_project_id is not None:
             if ticket_project_id == project.id:
                 raise HTTPException(status.HTTP_400_BAD_REQUEST, "Cannot bind project to itself as ticket project")
+            if project.project_type == "case_library":
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, "A case_library project cannot bind another case library")
             target = (await db.execute(select(Project).where(Project.id == ticket_project_id))).scalar_one_or_none()
             if target is None:
                 raise HTTPException(status.HTTP_404_NOT_FOUND, "Ticket project not found")
-            if target.ticket_project_id is not None:
-                raise HTTPException(status.HTTP_400_BAD_REQUEST, "Ticket project cannot itself have a ticket binding (no recursive chains)")
+            if target.project_type != "case_library":
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, "Ticket project must be a case_library project")
         project.ticket_project_id = ticket_project_id
 
     git_simple_fields = {

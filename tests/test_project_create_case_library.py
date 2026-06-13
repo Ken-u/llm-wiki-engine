@@ -86,7 +86,7 @@ def test_create_project_as_case_library_rejects_already_bound_main(tmp_path, mon
             user = User(id=1, username="owner", password_hash="hash", role="user")
             db.add(user)
             db.add(Project(id="main-1", name="Main", slug="main", description="", created_by=1, ticket_project_id="old-case"))
-            db.add(Project(id="old-case", name="Old Cases", slug="old-cases", description="", created_by=1))
+            db.add(Project(id="old-case", name="Old Cases", slug="old-cases", description="", created_by=1, project_type="case_library"))
             db.add(ProjectMember(project_id="main-1", user_id=1, role="owner"))
             await db.commit()
 
@@ -128,7 +128,7 @@ def test_delete_case_library_clears_main_project_binding(tmp_path, monkeypatch):
         async with Session() as db:
             user = User(id=1, username="owner", password_hash="hash", role="user")
             main = Project(id="main-1", name="Main", slug="main", description="", created_by=1)
-            case = Project(id="case-1", name="Cases", slug="cases", description="", created_by=1)
+            case = Project(id="case-1", name="Cases", slug="cases", description="", created_by=1, project_type="case_library")
             main.ticket_project_id = case.id
             db.add(user)
             db.add(main)

@@ -50,6 +50,8 @@ class ProjectResponse(BaseModel):
     last_git_sync_status: str = "idle"
     last_git_sync_error: str = ""
     ingest_paused: bool = False
+    project_type: str = "knowledge_base"
+    case_index_auto_rebuild: bool = False
 
     class Config:
         from_attributes = True
@@ -70,6 +72,8 @@ class UpdateProjectRequest(BaseModel):
     git_sync_enabled: bool | None = None
     git_sync_auto_compile: bool | None = None
     git_sync_time: str | None = None
+    case_index_auto_rebuild: bool | None = None
+    ingest_paused: bool | None = None
 
 
 class TestGitConnectionRequest(BaseModel):
@@ -123,6 +127,8 @@ async def _build_project_response(db: AsyncSession, proj: Project) -> ProjectRes
         last_git_sync_status=proj.last_git_sync_status,
         last_git_sync_error=proj.last_git_sync_error,
         ingest_paused=proj.ingest_paused,
+        project_type=proj.project_type,
+        case_index_auto_rebuild=proj.case_index_auto_rebuild,
     )
 
 
@@ -141,14 +147,13 @@ async def create_project(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    if body.as_case_library and not body.main_project_id:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Main project is required when creating a case library")
     proj = await service.create_project(
         db,
         name=body.name,
         slug=body.slug,
         description=body.description,
         user=user,
+        as_case_library=body.as_case_library,
         case_library_main_project_id=body.main_project_id if body.as_case_library else None,
     )
     return await _build_project_response(db, proj)
@@ -195,6 +200,10 @@ async def update_project(
         kwargs["ticket_project_id"] = body.ticket_project_id
     if "feedback_enabled" in body.model_fields_set:
         kwargs["feedback_enabled"] = body.feedback_enabled
+    if "case_index_auto_rebuild" in body.model_fields_set:
+        kwargs["case_index_auto_rebuild"] = body.case_index_auto_rebuild
+    if "ingest_paused" in body.model_fields_set:
+        kwargs["ingest_paused"] = body.ingest_paused
 
     git_fields = [
         "git_repo_url", "git_branch", "git_username", "git_author_name",

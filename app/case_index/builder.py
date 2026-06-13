@@ -39,6 +39,27 @@ def load_manifest(project_dir: str) -> CaseManifest | None:
         return None
 
 
+STALE_MARKER = ".llm-wiki/case-index-stale"
+
+
+def mark_case_index_stale(project_dir: str) -> None:
+    marker = Path(project_dir) / STALE_MARKER
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(
+        datetime.now(timezone.utc).isoformat(), encoding="utf-8"
+    )
+
+
+def clear_case_index_stale(project_dir: str) -> None:
+    marker = Path(project_dir) / STALE_MARKER
+    if marker.exists():
+        marker.unlink()
+
+
+def is_case_index_stale(project_dir: str) -> bool:
+    return (Path(project_dir) / STALE_MARKER).exists()
+
+
 def _scan_sources(project_dir: str) -> list[Path]:
     src = Path(project_dir) / "raw" / "sources"
     if not src.exists():
@@ -224,6 +245,7 @@ async def rebuild_case_index(project_dir: str) -> CaseManifest:
     if final_dir.exists():
         shutil.rmtree(final_dir)
     tmp_dir.rename(final_dir)
+    clear_case_index_stale(project_dir)
 
     logger.info(
         "Case index rebuilt: %d cases, %d chunks from %d sources",
