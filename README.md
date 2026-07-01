@@ -96,7 +96,7 @@ Windows 使用：
 scripts\build-runtime.bat
 ```
 
-产物位于 `dist/llm-wiki-runtime` 或 `dist\llm-wiki-runtime.exe`。Windows、macOS、Linux 需要分别在对应平台构建。
+产物位于 `dist/runtime/<platform>/llm-wiki-runtime`（Windows 为 `.exe`）。
 
 ### Docker（单服务，开发用）
 

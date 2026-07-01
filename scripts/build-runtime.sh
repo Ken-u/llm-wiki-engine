@@ -50,11 +50,15 @@ done
 
 build_linux() {
   uv sync --extra dev
-  uv run pyinstaller --clean --noconfirm packaging/runtime/llm-wiki-runtime.spec
-  mkdir -p dist/runtime
-  cp dist/llm-wiki-runtime dist/runtime/llm-wiki-runtime-linux-x86_64
-  cp runtime-config.example.yaml dist/runtime/runtime-config.example.yaml
-  echo "Linux runtime binary written to dist/runtime/llm-wiki-runtime-linux-x86_64"
+  local outdir="dist/runtime/linux-x86_64"
+  local tmpdist="dist/.tmp-runtime-build"
+  rm -rf "$tmpdist" "$outdir"
+  uv run pyinstaller --clean --noconfirm --distpath "$tmpdist" packaging/runtime/llm-wiki-runtime.spec
+  mkdir -p "$outdir"
+  cp "$tmpdist/llm-wiki-runtime" "$outdir/llm-wiki-runtime"
+  cp runtime-config.example.yaml "$outdir/runtime-config.example.yaml"
+  rm -rf "$tmpdist"
+  echo "Linux runtime binary written to $outdir/llm-wiki-runtime"
 }
 
 unsupported_cross_build() {
