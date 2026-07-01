@@ -1,0 +1,68 @@
+name: Runtime Build
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "app/runtime/**"
+      - "app/runtime_main.py"
+      - "packaging/runtime/**"
+      - "runtime-config.example.yaml"
+      - "scripts/build-runtime.*"
+      - "pyproject.toml"
+      - "uv.lock"
+
+jobs:
+  build:
+    name: Build runtime (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            os: ubuntu-latest
+            artifact: llm-wiki-runtime-linux-x86_64
+            binary: dist/llm-wiki-runtime
+          - platform: windows
+            os: windows-latest
+            artifact: llm-wiki-runtime-windows-x86_64.exe
+            binary: dist/llm-wiki-runtime.exe
+          - platform: macos
+            os: macos-latest
+            artifact: llm-wiki-runtime-macos-arm64
+            binary: dist/llm-wiki-runtime
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Run runtime tests
+        run: uv run pytest tests/test_litellm_startup.py tests/test_runtime_api.py
+
+      - name: Build runtime
+        run: uv run pyinstaller --clean --noconfirm packaging/runtime/llm-wiki-runtime.spec
+
+      - name: Prepare artifact
+        shell: bash
+        run: |
+          mkdir -p artifact
+          cp "${{ matrix.binary }}" "artifact/${{ matrix.artifact }}"
+          cp runtime-config.example.yaml artifact/runtime-config.example.yaml
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-${{ matrix.platform }}
+          path: artifact/
