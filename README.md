@@ -54,6 +54,50 @@ uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 - API 文档：http://localhost:8000/docs  
 - 健康检查：http://localhost:8000/health  
 
+### 启动 Runtime（单知识库只读推理）
+
+Runtime 是面向分发的本地只读查询入口，不启动 DB、用户系统、编译队列、反馈或 Git 同步。它读取 `runtime-config.example.yaml` 格式的本地配置，消费已经由完整 engine 生成的 `wiki/`、`.llm-wiki/lancedb/` 和案例库 `.llm-wiki/case-index/`。
+
+```bash
+cd llm-wiki-engine
+cp runtime-config.example.yaml runtime-config.yaml
+# 编辑 runtime-config.yaml：knowledge.path、case_library.path、LLM/Embedding 配置
+
+uv run python -m app.runtime_main --config ./runtime-config.yaml
+```
+
+默认地址：http://127.0.0.1:8012
+
+Runtime 提供：
+
+```
+GET  /api/status
+POST /api/chat                  # SSE 流式 + 非流式
+POST /api/search
+GET  /api/wiki
+GET  /api/wiki/{path}
+GET  /api/cases/{case_id}
+GET  /v1/models
+POST /v1/chat/completions       # 支持 stream=true
+```
+
+### 打包 Runtime 单文件
+
+本地平台打包：
+
+```bash
+cd llm-wiki-engine
+./scripts/build-runtime.sh
+```
+
+Windows 使用：
+
+```bat
+scripts\build-runtime.bat
+```
+
+产物位于 `dist/llm-wiki-runtime` 或 `dist\llm-wiki-runtime.exe`。Windows、macOS、Linux 需要分别在对应平台构建。
+
 ### Docker（单服务，开发用）
 
 本子目录含独立 `docker-compose.yml`，仅启动 engine，数据卷为 `./projects`：

@@ -1,0 +1,58 @@
+server:
+  host: 127.0.0.1
+  port: 8012
+  open_browser: true
+  api_key: ""
+
+knowledge:
+  name: Local Knowledge
+  path: ./data/knowledge
+  model_name: local-wiki
+  system_prompt: |
+    你是知识库问答助手。只能基于知识库和案例库内容回答。
+    如果没有找到依据，请明确说明未找到相关信息。
+
+case_library:
+  enabled: true
+  name: Case Library
+  path: ./data/cases
+
+llm:
+  provider: openai
+  model: gpt-4o-mini
+  api_key: ${LLM_API_KEY}
+  api_base: null
+  max_context_size: 128000
+  context_compress_threshold: 0.85
+  context_compress_target: 0.65
+  timeout: 120
+  ingest_temperature: 0.1
+  chat_temperature: 0.7
+  stream: true
+
+embedding:
+  enabled: true
+  provider: openai
+  model: text-embedding-3-small
+  api_key: ${EMBEDDING_API_KEY}
+  api_base: null
+  dimensions: null
+
+search:
+  rrf_k: 60
+  default_top_k: 10
+  filename_exact_bonus: 200
+  phrase_in_title_bonus: 50
+
+runtime:
+  mode: auto
+  max_tool_calls: 20
+  debug_result_limit: 2000
+
+hooks:
+  enabled: false
+  run_on_startup: true
+  run_before_server: true
+  stop_on_failure: true
+  timeout_seconds: 120
+  scripts: []

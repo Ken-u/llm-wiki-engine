@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from typing import TYPE_CHECKING
 
 from app.agents.orchestrator import run_agent_turn
 from app.agents.tools import ToolContext
@@ -13,7 +14,9 @@ from app.knowledge.fast_lookup import (
     fast_lookup,
     is_definition_query,
 )
-from app.projects.models import Project
+
+if TYPE_CHECKING:
+    from app.projects.models import Project
 
 logger = logging.getLogger(__name__)
 

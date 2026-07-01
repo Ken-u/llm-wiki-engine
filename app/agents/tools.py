@@ -10,16 +10,18 @@ import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import aiofiles
 
 from app.case_index.builder import load_manifest
 from app.case_index.search import search_cases, read_case
-from app.projects.models import Project
 from app.search.bm25 import search_bm25
 from app.search.fusion import rrf_fusion
 from app.search.vector import search_vector
+
+if TYPE_CHECKING:
+    from app.projects.models import Project
 
 logger = logging.getLogger(__name__)
 
