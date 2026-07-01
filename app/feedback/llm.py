@@ -10,7 +10,7 @@ import json
 import logging
 from dataclasses import dataclass, field
 
-from app.config import get_config, FeedbackModelConfig
+from app.config import get_config, FeedbackModelConfig, normalize_litellm_api_base
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +66,7 @@ def _build_kwargs(cfg: FeedbackModelConfig) -> dict:
     }
     api_base = cfg.api_base or main.api_base
     if api_base:
-        kwargs["api_base"] = api_base
+        kwargs["api_base"] = normalize_litellm_api_base(api_base)
     return kwargs
 
 

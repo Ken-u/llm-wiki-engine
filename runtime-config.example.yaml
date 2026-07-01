@@ -21,7 +21,7 @@ llm:
   provider: openai
   model: gpt-4o-mini
   api_key: ${LLM_API_KEY}
-  api_base: null
+  api_base: null  # OpenAI-compatible gateway root; /v1 is appended automatically
   max_context_size: 128000
   context_compress_threshold: 0.85
   context_compress_target: 0.65
@@ -35,7 +35,7 @@ embedding:
   provider: openai
   model: text-embedding-3-small
   api_key: ${EMBEDDING_API_KEY}
-  api_base: null
+  api_base: null  # OpenAI-compatible gateway root; /v1 is appended automatically
   dimensions: null
 
 search:

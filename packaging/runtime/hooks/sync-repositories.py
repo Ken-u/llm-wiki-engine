@@ -8,12 +8,24 @@ executes configured hook commands and passes RUNTIME_CONFIG to them.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import subprocess
 import sys
 import time
 from pathlib import Path
 from urllib.parse import quote, urlsplit, urlunsplit
+
+logger = logging.getLogger("sync-repositories")
+
+
+def _configure_logging() -> None:
+    level = os.environ.get("SYNC_REPOSITORIES_LOG_LEVEL", "INFO").upper()
+    logging.basicConfig(
+        level=getattr(logging, level, logging.INFO),
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        stream=sys.stderr,
+    )
 
 
 def _clean_scalar(value: str) -> str:
@@ -104,7 +116,8 @@ def _redact(text: str, authed_url: str, token: str) -> str:
 
 
 def _run_git(args: list[str], cwd: Path | None, timeout: int) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+    logger.info("Running git %s in %s", " ".join(args), cwd or "current directory")
+    result = subprocess.run(
         ["git", *args],
         cwd=str(cwd) if cwd else None,
         capture_output=True,
@@ -112,11 +125,18 @@ def _run_git(args: list[str], cwd: Path | None, timeout: int) -> subprocess.Comp
         timeout=timeout,
         check=False,
     )
+    if result.stdout.strip():
+        logger.info("git stdout: %s", result.stdout.strip())
+    if result.stderr.strip():
+        logger.warning("git stderr: %s", result.stderr.strip())
+    logger.info("git exited with code %d", result.returncode)
+    return result
 
 
 def _sync_repo(repo: dict[str, str], config_dir: Path, timeout: int) -> dict:
     started = time.monotonic()
     name = repo.get("name") or repo.get("path") or "repository"
+    logger.info("Syncing repository '%s'", name)
     enabled = repo.get("enabled", "true").lower() not in {"0", "false", "no", "off"}
     url = repo.get("url", "")
     branch = repo.get("branch", "").strip()
@@ -131,7 +151,7 @@ def _sync_repo(repo: dict[str, str], config_dir: Path, timeout: int) -> dict:
         stderr = _redact("\n".join(stderr_parts), authed_url, token)
         if status == "failed" and stderr and stderr not in error:
             error = f"{error}: {stderr[-1000:]}" if error else stderr[-1000:]
-        return {
+        result = {
             "name": name,
             "status": status,
             "exit_code": exit_code,
@@ -141,13 +161,21 @@ def _sync_repo(repo: dict[str, str], config_dir: Path, timeout: int) -> dict:
             "stderr": stderr[-4000:],
             "error": error,
         }
+        log_method = logger.info if status in ("ok", "skipped") else logger.error
+        log_method("Repository '%s' finished with status='%s' exit_code=%s error=%s", name, status, exit_code, error or "none")
+        return result
 
     if not enabled:
+        logger.info("Repository '%s' is disabled; skipping", name)
         return finish("skipped")
     if not url:
+        logger.error("Repository '%s' is missing required 'url'", name)
         return finish("failed", error="url is required")
     if not repo.get("path"):
+        logger.error("Repository '%s' is missing required 'path'", name)
         return finish("failed", error="path is required")
+
+    logger.info("Repository '%s': url=%s branch=%s target=%s", name, _redact_url(url), branch or "<default>", target)
 
     try:
         if not (target / ".git").exists():
@@ -190,14 +218,20 @@ def _sync_repo(repo: dict[str, str], config_dir: Path, timeout: int) -> dict:
             return finish("failed", result.returncode, f"git sync failed for {_redact_url(url)}")
         return finish("ok", 0)
     except Exception as exc:
+        logger.exception("Repository '%s' raised an exception during sync", name)
         return finish("failed", error=str(exc))
 
 
 def main() -> int:
+    _configure_logging()
     config_path = Path(sys.argv[1] if len(sys.argv) > 1 else os.environ.get("RUNTIME_CONFIG", "runtime-config.yaml"))
+    logger.info("Using config path: %s", config_path)
     config_path = config_path.expanduser().resolve()
+    logger.info("Resolved config path: %s", config_path)
     timeout = int(os.environ.get("SYNC_REPOSITORIES_TIMEOUT", "120"))
+    logger.info("Sync timeout: %d seconds", timeout)
     repos = _parse_repositories(config_path)
+    logger.info("Parsed %d repository entries", len(repos))
     results = [_sync_repo(repo, config_path.parent, timeout) for repo in repos]
     print(json.dumps(results, ensure_ascii=False, indent=2))
     return 1 if any(result["status"] == "failed" for result in results) else 0

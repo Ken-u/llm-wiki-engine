@@ -21,6 +21,16 @@ from pydantic_settings import BaseSettings
 logger = logging.getLogger(__name__)
 
 
+def normalize_litellm_api_base(api_base: str | None) -> str | None:
+    """Ensure OpenAI-compatible api_base ends with /v1 for LiteLLM."""
+    if not api_base:
+        return None
+    base = api_base.rstrip("/")
+    if base.endswith("/v1"):
+        return base
+    return f"{base}/v1"
+
+
 class ServerConfig(BaseModel):
     host: str = "0.0.0.0"
     port: int = 8000

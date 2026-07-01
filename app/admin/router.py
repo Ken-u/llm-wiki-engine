@@ -12,7 +12,7 @@ from sqlalchemy import delete, select, text
 
 from app.auth.deps import require_admin
 from app.auth.models import User, UserApiToken
-from app.config import _reload_config, get_config, load_db_overrides, save_db_settings
+from app.config import _reload_config, get_config, load_db_overrides, normalize_litellm_api_base, save_db_settings
 from app.database import async_session
 from app.agents.models import Agent, AgentProject
 from app.projects.models import Project, ProjectMember
@@ -341,7 +341,7 @@ async def test_llm(body: LLMSettingsUpdate, user: User = Depends(require_admin))
         "timeout": timeout,
     }
     if api_base:
-        kwargs["api_base"] = api_base
+        kwargs["api_base"] = normalize_litellm_api_base(api_base)
 
     try:
         resp = await litellm.acompletion(**kwargs)
@@ -417,7 +417,7 @@ async def test_embedding(body: EmbeddingSettingsUpdate, user: User = Depends(req
     if dimensions:
         kwargs["dimensions"] = dimensions
     if api_base:
-        kwargs["api_base"] = api_base
+        kwargs["api_base"] = normalize_litellm_api_base(api_base)
 
     try:
         resp = await litellm.aembedding(**kwargs)
@@ -603,7 +603,7 @@ async def test_feedback_model(body: FeedbackModelSettingsUpdate, user: User = De
         "api_key": eval_key or None,
     }
     if eval_base:
-        kwargs["api_base"] = eval_base
+        kwargs["api_base"] = normalize_litellm_api_base(eval_base)
 
     try:
         resp = await litellm.acompletion(**kwargs)

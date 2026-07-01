@@ -1,0 +1,1 @@
+../packaging/runtime/hooks/sync-repositories.bat

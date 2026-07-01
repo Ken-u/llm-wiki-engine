@@ -10,6 +10,7 @@ Or:
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import socket
 import webbrowser
@@ -24,6 +25,8 @@ from app.runtime.config import get_runtime_config, load_runtime_config
 from app.runtime.hooks import run_startup_hooks
 from app.runtime.router import openai_router, router as runtime_router
 from app.runtime.ui import mount_runtime_ui
+
+logger = logging.getLogger("app.runtime_main")
 
 
 def _port_available(host: str, port: int) -> bool:
@@ -45,7 +48,11 @@ def _choose_port(host: str, port: int) -> int:
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     settings = get_runtime_config()
     if not os.environ.get("RUNTIME_SKIP_HOOKS") and settings.hooks.run_before_server:
-        await run_startup_hooks(settings)
+        try:
+            await run_startup_hooks(settings)
+        except RuntimeError as exc:
+            logger.error("Startup hook failed: %s", exc)
+            raise
     yield
 
 
@@ -104,6 +111,7 @@ def main() -> None:
         host=host,
         port=port,
         log_level=args.log_level,
+        log_config=None,
     )
 
 

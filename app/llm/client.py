@@ -7,7 +7,7 @@ import logging
 from dataclasses import dataclass
 from typing import AsyncGenerator, Awaitable, Callable, TypeVar
 
-from app.config import get_config
+from app.config import get_config, normalize_litellm_api_base
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +65,7 @@ def _common_kwargs(temperature: float, max_tokens: int) -> dict:
         "timeout": cfg.timeout,
     }
     if cfg.api_base:
-        kwargs["api_base"] = cfg.api_base
+        kwargs["api_base"] = normalize_litellm_api_base(cfg.api_base)
     return kwargs
 
 

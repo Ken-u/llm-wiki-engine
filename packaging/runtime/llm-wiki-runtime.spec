@@ -11,9 +11,14 @@ datas = [
         str(ROOT / "app" / "runtime" / "ui_dist"),
         "app/runtime/ui_dist",
     ),
+    (
+        str(ROOT / "packaging" / "runtime" / "hooks"),
+        "hooks",
+    ),
 ]
 datas += collect_data_files("litellm")
 datas += collect_data_files("lancedb")
+datas += collect_data_files("tiktoken")
 
 hiddenimports = []
 hiddenimports += collect_submodules("lancedb")
@@ -28,6 +33,8 @@ hiddenimports += [
     "pandas",
     "pyarrow",
     "pyarrow.lib",
+    "tiktoken_ext",
+    "tiktoken_ext.openai_public",
 ]
 
 a = Analysis(

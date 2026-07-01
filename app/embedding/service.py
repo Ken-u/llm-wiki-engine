@@ -15,7 +15,7 @@ import aiofiles
 import lancedb
 import pyarrow as pa
 
-from app.config import get_config
+from app.config import get_config, normalize_litellm_api_base
 from app.embedding.chunker import chunk_markdown
 
 logger = logging.getLogger(__name__)
@@ -88,7 +88,7 @@ async def _get_embeddings(texts: list[str]) -> list[list[float]]:
     if cfg.dimensions:
         kwargs["dimensions"] = cfg.dimensions
     if cfg.api_base:
-        kwargs["api_base"] = cfg.api_base
+        kwargs["api_base"] = normalize_litellm_api_base(cfg.api_base)
 
     resp = await litellm.aembedding(**kwargs)
     return [item["embedding"] for item in resp.data]
