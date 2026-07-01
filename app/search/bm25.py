@@ -9,8 +9,6 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from rank_bm25 import BM25Okapi
-
 
 @dataclass
 class BM25Result:
@@ -68,6 +66,8 @@ def search_bm25(project_dir: str, query: str, top_k: int = 10) -> list[BM25Resul
 
     if not pages:
         return []
+
+    from rank_bm25 import BM25Okapi
 
     corpus = [_tokenize(content) for _, content, _ in pages]
     bm25 = BM25Okapi(corpus)

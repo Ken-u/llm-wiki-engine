@@ -43,9 +43,9 @@ def test_app_main_import_does_not_import_litellm():
 
     result = subprocess.run(
         [sys.executable, "-c", script],
-        check=True,
         capture_output=True,
         text=True,
     )
 
+    assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "False"
