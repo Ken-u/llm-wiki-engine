@@ -1,0 +1,32 @@
+server:
+  host: 0.0.0.0
+  port: 8011
+  projects_dir: ./projects
+auth:
+  jwt_secret: change-me-in-production
+  jwt_expire_hours: 72
+  allow_registration: true
+llm:
+  provider: openai
+  model: gpt-4o-mini
+  api_key: ${LLM_API_KEY}
+  api_base: null
+  max_context_size: 128000
+  context_compress_threshold: 0.85
+  context_compress_target: 0.65
+  timeout: 120
+  ingest_temperature: 0.1
+  chat_temperature: 0.7
+  stream: false
+embedding:
+  enabled: true
+  provider: openai
+  model: text-embedding-3-small
+  api_key: ${EMBEDDING_API_KEY}
+  api_base: null
+  dimensions: null
+search:
+  rrf_k: 60
+  default_top_k: 10
+  filename_exact_bonus: 200
+  phrase_in_title_bonus: 50

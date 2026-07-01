@@ -122,7 +122,13 @@ docker compose up -d
 | `DATABASE_URL` | SQLite 连接串 | `sqlite+aiosqlite:///./data/engine.db` |
 | `CONFIG_PATH` | `config.yaml` 路径 | 可选 |
 
-`config.yaml` 示例：
+`config.yaml` 是本地私有配置，不提交到 Git。首次使用请复制模板：
+
+```bash
+cp config.example.yaml config.yaml
+```
+
+模板示例：
 
 ```yaml
 llm:
@@ -137,7 +143,7 @@ embedding:
   dimensions: 1536
 ```
 
-Ollama 本地示例见原 `config.yaml` 注释；Admin API 可将部分配置写入 DB 覆盖 YAML。
+Admin API 可将部分配置写入 DB 覆盖 YAML。
 
 ## API 概览
 
@@ -387,7 +393,7 @@ uv run pytest -v
 ```
 llm-wiki-engine/
 ├── pyproject.toml
-├── config.yaml
+├── config.example.yaml
 ├── Dockerfile
 ├── docker-compose.yml      # 仅 engine 单服务
 ├── .env.example

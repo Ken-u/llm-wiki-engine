@@ -47,6 +47,7 @@ htmlcov/
 .env
 .env.local
 .env.*.local
+config.yaml
 
 # Database
 *.db
