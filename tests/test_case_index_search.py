@@ -104,11 +104,11 @@ def test_read_case_with_section(tmp_path):
 
 
 def test_read_case_fuzzy_section_numbered_heading(tmp_path):
-    from tests.test_case_index_parser import CASE_MARKDOWN_MD
+    from tests.test_case_index_parser import CASE_MARKDOWN
 
     src = tmp_path / "raw" / "sources"
     src.mkdir(parents=True, exist_ok=True)
-    (src / "3001.md").write_text(CASE_MARKDOWN_MD, encoding="utf-8")
+    (src / "3001.md").write_text(CASE_MARKDOWN, encoding="utf-8")
     (tmp_path / ".llm-wiki").mkdir(parents=True, exist_ok=True)
     with patch("app.case_index.builder._get_embeddings", new_callable=AsyncMock) as mock_embed, \
          patch("app.case_index.builder.get_config") as mock_cfg:

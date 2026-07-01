@@ -4,7 +4,7 @@
 
 不同于传统 RAG（chunk → embedding → 检索原文），本引擎先将原始文档通过 LLM **两步编译** 为结构化 Markdown 知识单元（entity / concept / source summary），再基于高质量知识页面提供检索、问答、Agent 与反馈修正 API。
 
-> 完整栈（UI + Case Service）请使用仓库根目录的 `docker-compose.yml` 或 `./start-dev.sh`。本文档侧重 **单独运行 engine** 或 API 集成。
+> 完整栈（UI + 可选案例生成服务）请使用仓库根目录的 `docker-compose.yml` 或 `./start-dev.sh`。本文档侧重 **单独运行 engine** 或 API 集成。
 
 ## 核心能力
 
@@ -247,7 +247,7 @@ POST  /api/projects/{id}/knowledge-api/regenerate-token
    
    慢路径复用项目的 knowledge Agent（自动创建），执行完整的 `search_wiki` → `read_wiki_page` → `grep_raw` 工具循环，最终将 Agent 生成的文本作为 `choices[0].message.content` 返回。
    
-   **关键约束**：慢路径始终设置 `include_ticket_project=False`，即使项目绑定了案例库也不暴露 `search_ticket_cases` / `read_ticket_page` 工具，防止与 case-service 产出的案例形成循环引用。
+   **关键约束**：慢路径始终设置 `include_ticket_project=False`，即使项目绑定了案例库也不暴露 `search_ticket_cases` / `read_ticket_page` 工具，防止与外部案例生成服务产出的案例形成循环引用。
 
 #### 调用示例
 
