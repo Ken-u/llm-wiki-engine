@@ -2,7 +2,15 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-RUNTIME_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-CONFIG_PATH="${1:-${RUNTIME_DIR}/runtime-config.yaml}"
+CONFIG_PATH="${1:-${RUNTIME_CONFIG:-runtime-config.yaml}}"
 
-exec "${RUNTIME_DIR}/llm-wiki-runtime" --config "${CONFIG_PATH}" --sync-repositories
+if command -v python3 >/dev/null 2>&1; then
+  exec python3 "${SCRIPT_DIR}/sync-repositories.py" "${CONFIG_PATH}"
+fi
+
+if command -v python >/dev/null 2>&1; then
+  exec python "${SCRIPT_DIR}/sync-repositories.py" "${CONFIG_PATH}"
+fi
+
+echo "python3 or python is required to run sync-repositories.py" >&2
+exit 127

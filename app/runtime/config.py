@@ -65,23 +65,12 @@ class HookScriptConfig(BaseModel):
     wait_for: HookWaitForConfig | None = None
 
 
-class HookRepositoryConfig(BaseModel):
-    name: str
-    url: str
-    path: str
-    branch: str = "main"
-    enabled: bool = True
-    username: str = ""
-    token: str = ""
-
-
 class RuntimeHooksConfig(BaseModel):
     enabled: bool = False
     run_on_startup: bool = True
     run_before_server: bool = True
     stop_on_failure: bool = True
     timeout_seconds: int = Field(default=120, ge=1)
-    repositories: list[HookRepositoryConfig] = Field(default_factory=list)
     scripts: list[HookScriptConfig] = Field(default_factory=list)
 
 
@@ -134,8 +123,6 @@ def _resolve_path(config_dir: Path, raw_path: str) -> str:
 def _resolve_paths(settings: RuntimeSettings, config_dir: Path) -> RuntimeSettings:
     settings.knowledge.path = _resolve_path(config_dir, settings.knowledge.path)
     settings.case_library.path = _resolve_path(config_dir, settings.case_library.path)
-    for repo in settings.hooks.repositories:
-        repo.path = _resolve_path(config_dir, repo.path)
     return settings
 
 

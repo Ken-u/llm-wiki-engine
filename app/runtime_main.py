@@ -21,7 +21,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.runtime.config import get_runtime_config, load_runtime_config
-from app.runtime.hooks import run_repository_sync_hooks, run_startup_hooks
+from app.runtime.hooks import run_startup_hooks
 from app.runtime.router import openai_router, router as runtime_router
 from app.runtime.ui import mount_runtime_ui
 
@@ -84,7 +84,6 @@ def main() -> None:
     parser.add_argument("--no-browser", action="store_true")
     parser.add_argument("--log-level", default="info")
     parser.add_argument("--skip-hooks", action="store_true")
-    parser.add_argument("--sync-repositories", action="store_true")
     args = parser.parse_args()
 
     os.environ["RUNTIME_CONFIG"] = args.config
@@ -92,14 +91,6 @@ def main() -> None:
         os.environ["RUNTIME_SKIP_HOOKS"] = "1"
 
     settings = load_runtime_config(args.config)
-    if args.sync_repositories:
-        import asyncio
-        import json
-
-        results = asyncio.run(run_repository_sync_hooks(settings))
-        print(json.dumps([r.__dict__ for r in results], ensure_ascii=False, indent=2))
-        return
-
     host = args.host or settings.server.host
     port = args.port or settings.server.port
     if args.port is None:

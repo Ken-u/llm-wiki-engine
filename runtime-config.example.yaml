@@ -55,10 +55,12 @@ hooks:
   run_before_server: true
   stop_on_failure: true
   timeout_seconds: 120
+  # Optional configuration consumed by hooks/sync-repositories.*.
   repositories: []
   # repositories:
   #   - name: knowledge
   #     url: https://github.com/example/knowledge.git
+  #     # Optional; leave empty to use the remote default branch.
   #     branch: main
   #     path: ./data/knowledge
   #     # Optional for private HTTPS repos; supports ${ENV_VAR} expansion.
@@ -69,3 +71,9 @@ hooks:
   #     branch: main
   #     path: ./data/cases
   scripts: []
+  # scripts:
+  #   - name: sync-repositories
+  #     command:
+  #       linux: ["bash", "-c", "\"$RUNTIME_APP_DIR/hooks/sync-repositories.sh\""]
+  #       darwin: ["bash", "-c", "\"$RUNTIME_APP_DIR/hooks/sync-repositories.sh\""]
+  #       windows: ["cmd", "/c", "\"%RUNTIME_APP_DIR%\\hooks\\sync-repositories.bat\""]
