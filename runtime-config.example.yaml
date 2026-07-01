@@ -55,4 +55,17 @@ hooks:
   run_before_server: true
   stop_on_failure: true
   timeout_seconds: 120
+  repositories: []
+  # repositories:
+  #   - name: knowledge
+  #     url: https://github.com/example/knowledge.git
+  #     branch: main
+  #     path: ./data/knowledge
+  #     # Optional for private HTTPS repos; supports ${ENV_VAR} expansion.
+  #     username: ""
+  #     token: ${GIT_TOKEN}
+  #   - name: cases
+  #     url: https://github.com/example/cases.git
+  #     branch: main
+  #     path: ./data/cases
   scripts: []

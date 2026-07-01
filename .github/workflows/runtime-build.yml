@@ -63,6 +63,7 @@ jobs:
           mkdir -p artifact/${{ matrix.dir }}
           cp "dist/.tmp-runtime-build/${{ matrix.artifact }}" "artifact/${{ matrix.dir }}/${{ matrix.artifact }}"
           cp runtime-config.example.yaml "artifact/${{ matrix.dir }}/runtime-config.example.yaml"
+          cp -R packaging/runtime/hooks "artifact/${{ matrix.dir }}/hooks"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

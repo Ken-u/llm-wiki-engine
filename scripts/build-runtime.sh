@@ -57,6 +57,7 @@ build_linux() {
   mkdir -p "$outdir"
   cp "$tmpdist/llm-wiki-runtime" "$outdir/llm-wiki-runtime"
   cp runtime-config.example.yaml "$outdir/runtime-config.example.yaml"
+  cp -R packaging/runtime/hooks "$outdir/hooks"
   rm -rf "$tmpdist"
   echo "Linux runtime binary written to $outdir/llm-wiki-runtime"
 }
