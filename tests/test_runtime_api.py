@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncGenerator
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from fastapi.testclient import TestClient
 
 from app.runtime.config import load_runtime_config
+from app.search.bm25 import _project_relative_path
 
 
 def _write_runtime_fixture(tmp_path: Path) -> Path:
@@ -81,6 +82,13 @@ hooks:
         encoding="utf-8",
     )
     return config
+
+
+def test_project_relative_path_is_posix_for_windows_paths():
+    path = PureWindowsPath("C:/project/wiki/entities/edla.md")
+    base = PureWindowsPath("C:/project")
+
+    assert _project_relative_path(path, base) == "wiki/entities/edla.md"
 
 
 def test_runtime_status_models_and_wiki(tmp_path: Path):

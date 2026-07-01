@@ -21,6 +21,10 @@ class BM25Result:
     snippet: str
 
 
+def _project_relative_path(path: Path, project_dir: Path) -> str:
+    return path.relative_to(project_dir).as_posix()
+
+
 def _tokenize(text: str) -> list[str]:
     return re.findall(r"\w+", text.lower())
 
@@ -57,7 +61,7 @@ def search_bm25(project_dir: str, query: str, top_k: int = 10) -> list[BM25Resul
 
     pages: list[tuple[str, str, str]] = []  # (rel_path, content, title)
     for md_file in wiki_dir.rglob("*.md"):
-        rel = str(md_file.relative_to(Path(project_dir)))
+        rel = _project_relative_path(md_file, Path(project_dir))
         content = md_file.read_text(encoding="utf-8", errors="replace")
         title = _extract_title(content)
         pages.append((rel, content, title))

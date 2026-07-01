@@ -4,13 +4,10 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from pathlib import Path
-
-import lancedb
-
-from app.embedding.service import _get_embeddings, _lancedb_path, TABLE_NAME
 
 logger = logging.getLogger(__name__)
+
+TABLE_NAME = "wiki_chunks_v2"
 
 
 @dataclass
@@ -22,7 +19,21 @@ class VectorResult:
     score: float
 
 
+async def _get_embeddings(texts: list[str]) -> list[list[float]]:
+    from app.embedding.service import _get_embeddings as get_embeddings
+
+    return await get_embeddings(texts)
+
+
+def _lancedb_path(project_dir: str) -> str:
+    from app.embedding.service import _lancedb_path as lancedb_path
+
+    return lancedb_path(project_dir)
+
+
 async def search_vector(project_dir: str, query: str, top_k: int = 10) -> list[VectorResult]:
+    import lancedb
+
     db_path = _lancedb_path(project_dir)
     db = await lancedb.connect_async(db_path)
     table_names = await db.table_names()

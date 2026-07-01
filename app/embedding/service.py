@@ -192,7 +192,7 @@ async def rebuild_project_embeddings(project_dir: str) -> dict[str, int]:
     base = Path(project_dir)
     wiki_dir = base / "wiki"
     wiki_paths = sorted(
-        str(path.relative_to(base))
+        path.relative_to(base).as_posix()
         for path in wiki_dir.rglob("*.md")
         if path.is_file() and not path.name.startswith(".")
     ) if wiki_dir.exists() else []

@@ -43,7 +43,7 @@ def build_wiki_graph(project_dir: str) -> WikiGraph:
 
     # First pass: collect all pages
     for md_file in wiki_dir.rglob("*.md"):
-        rel = str(md_file.relative_to(Path(project_dir)))
+        rel = md_file.relative_to(Path(project_dir)).as_posix()
         page_id = md_file.stem
         content = md_file.read_text(encoding="utf-8", errors="replace")
         meta, body = parse_frontmatter(content)

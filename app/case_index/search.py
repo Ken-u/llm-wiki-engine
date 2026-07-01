@@ -8,11 +8,8 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
-import lancedb
-
 from app.case_index.builder import CASE_INDEX_DIR, LANCEDB_TABLE, load_manifest
 from app.case_index.models import CaseRecord
-from app.embedding.service import _get_embeddings
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +72,12 @@ def _search_fts(project_dir: str, query: str, limit: int) -> list[tuple[str, str
         conn.close()
 
 
+async def _get_embeddings(texts: list[str]) -> list[list[float]]:
+    from app.embedding.service import _get_embeddings as get_embeddings
+
+    return await get_embeddings(texts)
+
+
 async def _search_vector(
     project_dir: str, query: str, limit: int
 ) -> list[tuple[str, str, str, float]]:
@@ -82,6 +85,8 @@ async def _search_vector(
     lance_dir = str(_case_index_path(project_dir) / "lancedb")
     if not Path(lance_dir).exists():
         return []
+
+    import lancedb
 
     embeddings = await _get_embeddings([query])
     if not embeddings:

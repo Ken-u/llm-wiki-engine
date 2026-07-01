@@ -31,6 +31,7 @@ _CONCEPT_DIRS = ("wiki/entities", "wiki/concepts")
 
 MAX_EXCERPT_CHARS = 2000
 BM25_SCORE_THRESHOLD = 2.0
+MIN_FALLBACK_TOKEN_LEN = 3
 
 
 def _slugify(term: str) -> str:
@@ -110,6 +111,53 @@ def _try_title_match(project_dir: str, term: str) -> FastLookupResult | None:
     return None
 
 
+def _query_tokens(term: str) -> list[str]:
+    return [
+        token.lower()
+        for token in re.findall(r"[\w\u4e00-\u9fff]+", term)
+        if len(token) >= MIN_FALLBACK_TOKEN_LEN
+    ]
+
+
+def _result_from_file(project_dir: str, path: str, title: str, matched_by: str) -> FastLookupResult | None:
+    full_path = Path(project_dir) / path
+    if not full_path.exists():
+        return None
+    content = full_path.read_text(encoding="utf-8", errors="replace")
+    _, body = parse_frontmatter(content)
+    return FastLookupResult(
+        path=path,
+        title=title,
+        content=_extract_definition_section(body),
+        matched_by=matched_by,
+    )
+
+
+def _try_token_match(project_dir: str, term: str) -> FastLookupResult | None:
+    """Fallback for tiny corpora where BM25 can assign zero scores to exact tokens."""
+    tokens = _query_tokens(term)
+    if not tokens:
+        return None
+
+    base = Path(project_dir)
+    best: tuple[int, str, str] | None = None
+    for subdir in _CONCEPT_DIRS:
+        dir_path = base / subdir
+        if not dir_path.exists():
+            continue
+        for md_file in dir_path.glob("*.md"):
+            content = md_file.read_text(encoding="utf-8", errors="replace")
+            meta, _ = parse_frontmatter(content)
+            haystack = f"{meta.title}\n{content}".lower()
+            matches = sum(1 for token in tokens if token in haystack)
+            if matches and (best is None or matches > best[0]):
+                best = (matches, md_file.relative_to(base).as_posix(), meta.title or md_file.stem)
+
+    if best is None:
+        return None
+    return _result_from_file(project_dir, best[1], best[2], "bm25")
+
+
 def _try_bm25_match(project_dir: str, term: str) -> FastLookupResult | None:
     """BM25 keyword search filtered to entity/concept pages."""
     results = search_bm25(project_dir, term, top_k=5)
@@ -117,17 +165,8 @@ def _try_bm25_match(project_dir: str, term: str) -> FastLookupResult | None:
         if r.score < BM25_SCORE_THRESHOLD:
             break
         if any(r.path.startswith(d) for d in _CONCEPT_DIRS):
-            full_path = Path(project_dir) / r.path
-            if full_path.exists():
-                content = full_path.read_text(encoding="utf-8", errors="replace")
-                _, body = parse_frontmatter(content)
-                return FastLookupResult(
-                    path=r.path,
-                    title=r.title,
-                    content=_extract_definition_section(body),
-                    matched_by="bm25",
-                )
-    return None
+            return _result_from_file(project_dir, r.path, r.title, "bm25")
+    return _try_token_match(project_dir, term)
 
 
 def fast_lookup(project_dir: str, term: str) -> FastLookupResult | None:
@@ -171,11 +210,11 @@ def is_definition_query(message: str) -> bool:
 
     # Pattern matching for explicit definition questions
     definition_patterns = [
-        r"^什么是\S+$",
-        r"^\S+是什么[？?]?$",
-        r"^\S+的定义[？?]?$",
-        r"^\S+的概念[？?]?$",
-        r"^(define|what is)\s+\S+$",
+        r"^什么是\s*\S.+$",
+        r"^\S.+是什么[？?]?$",
+        r"^\S.+的定义[？?]?$",
+        r"^\S.+的概念[？?]?$",
+        r"^(define|what is)\s+\S.+$",
     ]
     for pat in definition_patterns:
         if re.match(pat, msg, re.IGNORECASE):

@@ -9,13 +9,9 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-import lancedb
-import pyarrow as pa
-
 from app.case_index.models import CaseManifest, CaseRecord
 from app.case_index.parser import parse_case_markdown
 from app.config import get_config
-from app.embedding.service import _get_embeddings
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +106,15 @@ def _build_fts(db_path: Path, records: list[CaseRecord], chunks: list[dict]):
     conn.close()
 
 
-def _lance_schema(dim: int) -> pa.Schema:
+async def _get_embeddings(texts: list[str]) -> list[list[float]]:
+    from app.embedding.service import _get_embeddings as get_embeddings
+
+    return await get_embeddings(texts)
+
+
+def _lance_schema(dim: int):
+    import pyarrow as pa
+
     return pa.schema([
         pa.field("chunk_id", pa.string()),
         pa.field("case_id", pa.string()),
@@ -148,7 +152,7 @@ async def rebuild_case_index(project_dir: str) -> CaseManifest:
     for src in sources:
         try:
             text = src.read_text(encoding="utf-8", errors="replace")
-            rel_path = str(src.relative_to(base))
+            rel_path = src.relative_to(base).as_posix()
             record, chunks = parse_case_markdown(text, rel_path)
             all_records.append(record)
             for c in chunks:
@@ -217,6 +221,8 @@ async def rebuild_case_index(project_dir: str) -> CaseManifest:
         return manifest
 
     # Write LanceDB
+    import lancedb
+
     vector_dim = len(all_vectors[0]) if all_vectors else 0
     lance_dir = str(tmp_dir / "lancedb")
     db = await lancedb.connect_async(lance_dir)

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 
 import aiofiles
@@ -39,10 +38,10 @@ def list_documents(project: Project) -> list[dict]:
     docs = []
     for f in sorted(source_dir.rglob("*")):
         if f.is_file() and not f.name.startswith("."):
-            rel = f.relative_to(source_dir)
+            rel = f.relative_to(source_dir).as_posix()
             docs.append({
-                "name": str(rel),
-                "path": str(f.relative_to(project.disk_path)),
+                "name": rel,
+                "path": f.relative_to(project.disk_path).as_posix(),
                 "size": f.stat().st_size,
             })
     return docs

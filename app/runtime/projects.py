@@ -71,7 +71,7 @@ def build_wiki_tree(project: ProjectLike) -> list[dict]:
         for entry in sorted(path.iterdir()):
             if entry.name.startswith("."):
                 continue
-            rel = str(entry.relative_to(base))
+            rel = entry.relative_to(base).as_posix()
             if entry.is_dir():
                 items.append({
                     "name": entry.name,
@@ -95,4 +95,3 @@ def build_wiki_tree(project: ProjectLike) -> list[dict]:
         return items
 
     return walk(wiki_dir)
-

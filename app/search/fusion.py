@@ -7,10 +7,13 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from app.config import get_config
 from app.search.bm25 import BM25Result
-from app.search.vector import VectorResult
+
+if TYPE_CHECKING:
+    from app.search.vector import VectorResult
 
 
 @dataclass
@@ -38,7 +41,6 @@ def rrf_fusion(
     sources: dict[str, set] = {}
 
     query_lower = query.lower()
-    query_tokens = re.findall(r"\w+", query_lower)
 
     for rank, r in enumerate(keyword_results):
         rrf = 1.0 / (k + rank + 1)

@@ -34,7 +34,7 @@ class _FakeDb:
 def test_search_vector_returns_empty_on_lancedb_dimension_mismatch():
     async def run():
         with patch("app.search.vector._get_embeddings", AsyncMock(return_value=[[0.1] * 4096])):
-            with patch("app.search.vector.lancedb.connect_async", AsyncMock(return_value=_FakeDb())):
+            with patch("lancedb.connect_async", AsyncMock(return_value=_FakeDb())):
                 return await vector.search_vector("/tmp/project", "query", top_k=5)
 
     results = asyncio.run(run())

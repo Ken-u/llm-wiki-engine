@@ -9,11 +9,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth.deps import get_current_user
 from app.auth.models import User
 from app.database import get_db
-from app.embedding.service import rebuild_project_embeddings
 from app.projects.service import check_membership, get_project_or_404
 from app.search.bm25 import search_bm25
 from app.search.fusion import FusedResult, rrf_fusion
-from app.search.vector import search_vector
 
 router = APIRouter(prefix="/api/projects/{project_id}/search", tags=["search"])
 
@@ -62,6 +60,8 @@ async def search(
         kw_results = search_bm25(project.disk_path, body.query, top_k=body.top_k * 2)
 
     if body.mode in ("hybrid", "vector"):
+        from app.search.vector import search_vector
+
         vec_results = await search_vector(project.disk_path, body.query, top_k=body.top_k * 2)
 
     if body.mode == "keyword":
@@ -99,4 +99,6 @@ async def rebuild_vector_index(
 ):
     await check_membership(db, project_id, user)
     project = await get_project_or_404(db, project_id)
+    from app.embedding.service import rebuild_project_embeddings
+
     return await rebuild_project_embeddings(project.disk_path)
