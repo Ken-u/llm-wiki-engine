@@ -11,6 +11,10 @@ llm:
   model: gpt-4o-mini
   api_key: ${LLM_API_KEY}
   api_base: null
+  # Optional directory for full LLM request/response debugging.
+  # Each request writes one timestamped JSON file.
+  # Includes messages, tool schemas, tool calls, and tool execution results; api_key is never logged.
+  debug_llm_log: ""
   max_context_size: 128000
   context_compress_threshold: 0.85
   context_compress_target: 0.65

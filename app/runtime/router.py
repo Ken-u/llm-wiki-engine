@@ -15,7 +15,7 @@ from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, st
 from pydantic import BaseModel, Field
 from starlette.responses import PlainTextResponse, StreamingResponse
 
-from app.agents.orchestrator import run_agent_turn
+from app.agents.orchestrator import _build_system_prompt, run_agent_turn
 from app.agents.tools import ToolContext
 from app.case_index.builder import load_manifest
 from app.case_index.search import read_case_source, search_cases
@@ -85,6 +85,18 @@ class RuntimeYamlConfigResponse(BaseModel):
     content: str
 
 
+class RuntimeSystemPromptConfigResponse(BaseModel):
+    path: str
+    system_prompt: str
+    system_prompt_override: str
+    default_system_prompt: str
+
+
+class RuntimeSystemPromptConfigUpdate(BaseModel):
+    system_prompt: str = ""
+    system_prompt_override: str = ""
+
+
 def _redact_config(data: dict[str, Any]) -> dict[str, Any]:
     for section in ("llm", "embedding"):
         key = data.get(section, {}).get("api_key", "")
@@ -124,6 +136,16 @@ def _build_yaml_config_response(path: Path) -> RuntimeYamlConfigResponse:
     return RuntimeYamlConfigResponse(path=str(path), content=_dump_runtime_yaml(redacted))
 
 
+def _build_system_prompt_config_response(path: Path) -> RuntimeSystemPromptConfigResponse:
+    settings = get_runtime_config()
+    return RuntimeSystemPromptConfigResponse(
+        path=str(path),
+        system_prompt=settings.knowledge.system_prompt,
+        system_prompt_override=settings.knowledge.system_prompt_override,
+        default_system_prompt=_build_system_prompt("", has_ticket=get_case_project(settings) is not None),
+    )
+
+
 @router.get("/status")
 async def status_response():
     return await build_status(get_runtime_config())
@@ -160,6 +182,30 @@ async def update_yaml_config_response(content: str = Body(media_type="text/plain
     path.write_text(_dump_runtime_yaml(data), encoding="utf-8")
     load_runtime_config(path)
     return _build_yaml_config_response(path)
+
+
+@router.get("/config/system-prompt", response_model=RuntimeSystemPromptConfigResponse)
+async def get_system_prompt_config_response():
+    return _build_system_prompt_config_response(_runtime_config_path_or_500())
+
+
+@router.put("/config/system-prompt", response_model=RuntimeSystemPromptConfigResponse)
+async def update_system_prompt_config_response(body: RuntimeSystemPromptConfigUpdate):
+    path = _runtime_config_path_or_500()
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Invalid YAML: {exc}") from exc
+    if not isinstance(data, dict):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Runtime config YAML must be a mapping")
+    knowledge = data.setdefault("knowledge", {})
+    if not isinstance(knowledge, dict):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Runtime config knowledge section must be a mapping")
+    knowledge["system_prompt"] = body.system_prompt
+    knowledge["system_prompt_override"] = body.system_prompt_override
+    path.write_text(_dump_runtime_yaml(data), encoding="utf-8")
+    load_runtime_config(path)
+    return _build_system_prompt_config_response(path)
 
 
 @router.post("/hooks/run")
@@ -459,6 +505,7 @@ async def _chat_events(body: RuntimeChatRequest) -> AsyncGenerator[dict, None]:
         body.history,
         settings.knowledge.system_prompt,
         ctx,
+        system_prompt_override=settings.knowledge.system_prompt_override,
         max_tool_calls=settings.runtime.max_tool_calls,
         debug_result_limit=settings.runtime.debug_result_limit,
     ):

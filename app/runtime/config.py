@@ -34,6 +34,7 @@ class RuntimeKnowledgeConfig(BaseModel):
         "你是知识库问答助手。只能基于知识库和案例库内容回答。"
         "如果没有找到依据，请明确说明未找到相关信息。"
     )
+    system_prompt_override: str = ""
 
 
 class RuntimeCaseLibraryConfig(BaseModel):
@@ -123,6 +124,8 @@ def _resolve_path(config_dir: Path, raw_path: str) -> str:
 def _resolve_paths(settings: RuntimeSettings, config_dir: Path) -> RuntimeSettings:
     settings.knowledge.path = _resolve_path(config_dir, settings.knowledge.path)
     settings.case_library.path = _resolve_path(config_dir, settings.case_library.path)
+    if settings.llm.debug_llm_log:
+        settings.llm.debug_llm_log = _resolve_path(config_dir, settings.llm.debug_llm_log)
     return settings
 
 

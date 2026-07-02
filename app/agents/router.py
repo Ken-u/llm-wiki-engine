@@ -14,6 +14,7 @@ from starlette.responses import StreamingResponse
 from app.agents import conversations
 from app.agents.models import Agent, AgentProject
 from app.agents import service
+from app.agents.orchestrator import _build_system_prompt
 from app.auth.deps import get_current_user
 from app.auth.models import User
 from app.config import get_config
@@ -27,6 +28,7 @@ class CreateAgentRequest(BaseModel):
     name: str = Field(min_length=1, max_length=128)
     description: str = ""
     system_prompt: str = ""
+    system_prompt_override: str = ""
     project_ids: list[str] = []
     is_public: bool = False
     require_api_key: bool = True
@@ -39,6 +41,7 @@ class UpdateAgentRequest(BaseModel):
     name: str | None = None
     description: str | None = None
     system_prompt: str | None = None
+    system_prompt_override: str | None = None
     project_ids: list[str] | None = None
     is_public: bool | None = None
     require_api_key: bool | None = None
@@ -52,6 +55,7 @@ class AgentResponse(BaseModel):
     name: str
     description: str
     system_prompt: str
+    system_prompt_override: str
     is_public: bool
     require_api_key: bool
     max_tool_calls: int
@@ -83,6 +87,10 @@ class ConversationResponse(BaseModel):
     message_count: int
 
 
+class DefaultSystemPromptResponse(BaseModel):
+    system_prompt: str
+
+
 async def _get_agent_or_404(db: AsyncSession, agent_id: str, user: User) -> Agent:
     agent = (await db.execute(select(Agent).where(Agent.id == agent_id))).scalar_one_or_none()
     if not agent:
@@ -97,6 +105,24 @@ def _parse_tool_labels(agent: Agent) -> dict[str, str]:
         return json.loads(agent.tool_labels or "{}")
     except (json.JSONDecodeError, TypeError):
         return {}
+
+
+def _agent_response(agent: Agent, project_ids: list[str]) -> AgentResponse:
+    return AgentResponse(
+        id=agent.id,
+        name=agent.name,
+        description=agent.description,
+        system_prompt=agent.system_prompt,
+        system_prompt_override=agent.system_prompt_override or "",
+        is_public=agent.is_public,
+        require_api_key=agent.require_api_key,
+        max_tool_calls=agent.max_tool_calls,
+        debug_result_limit=agent.debug_result_limit,
+        tool_labels=_parse_tool_labels(agent),
+        project_ids=project_ids,
+        created_by=agent.created_by,
+        created_at=agent.created_at,
+    )
 
 
 async def _agent_project_ids(db: AsyncSession, agent_id: str) -> list[str]:
@@ -123,19 +149,15 @@ async def create_agent(
         project_ids=body.project_ids,
         is_public=body.is_public,
         require_api_key=body.require_api_key,
+        system_prompt_override=body.system_prompt_override,
         max_tool_calls=body.max_tool_calls,
         debug_result_limit=body.debug_result_limit,
+        tool_labels=body.tool_labels,
         user_id=user.id,
     )
     pids = await _agent_project_ids(db, agent.id)
     return CreateAgentResponse(
-        agent=AgentResponse(
-            id=agent.id, name=agent.name, description=agent.description,
-            system_prompt=agent.system_prompt, is_public=agent.is_public,
-            require_api_key=agent.require_api_key, max_tool_calls=agent.max_tool_calls,
-            debug_result_limit=agent.debug_result_limit, tool_labels=_parse_tool_labels(agent),
-            project_ids=pids, created_by=agent.created_by, created_at=agent.created_at,
-        ),
+        agent=_agent_response(agent, pids),
         api_key=raw_key,
     )
 
@@ -153,14 +175,15 @@ async def list_agents(
     result = []
     for a in agents:
         pids = await _agent_project_ids(db, a.id)
-        result.append(AgentResponse(
-            id=a.id, name=a.name, description=a.description,
-            system_prompt=a.system_prompt, is_public=a.is_public,
-            require_api_key=a.require_api_key, max_tool_calls=a.max_tool_calls,
-            debug_result_limit=a.debug_result_limit, tool_labels=_parse_tool_labels(a),
-            project_ids=pids, created_by=a.created_by, created_at=a.created_at,
-        ))
+        result.append(_agent_response(a, pids))
     return result
+
+
+@router.get("/default-system-prompt", response_model=DefaultSystemPromptResponse)
+async def get_default_system_prompt(has_ticket: bool = True):
+    return DefaultSystemPromptResponse(
+        system_prompt=_build_system_prompt("", has_ticket=has_ticket)
+    )
 
 
 @router.get("/{agent_id}", response_model=AgentResponse)
@@ -171,13 +194,7 @@ async def get_agent(
 ):
     agent = await _get_agent_or_404(db, agent_id, user)
     pids = await _agent_project_ids(db, agent.id)
-    return AgentResponse(
-        id=agent.id, name=agent.name, description=agent.description,
-        system_prompt=agent.system_prompt, is_public=agent.is_public,
-        require_api_key=agent.require_api_key, max_tool_calls=agent.max_tool_calls,
-        debug_result_limit=agent.debug_result_limit, tool_labels=_parse_tool_labels(agent),
-        project_ids=pids, created_by=agent.created_by, created_at=agent.created_at,
-    )
+    return _agent_response(agent, pids)
 
 
 @router.get("/{agent_id}/conversations", response_model=list[ConversationResponse])
@@ -238,13 +255,7 @@ async def update_agent(
     agent = await _get_agent_or_404(db, agent_id, user)
     agent = await service.update_agent(db, agent, **body.model_dump(exclude_none=True))
     pids = await _agent_project_ids(db, agent.id)
-    return AgentResponse(
-        id=agent.id, name=agent.name, description=agent.description,
-        system_prompt=agent.system_prompt, is_public=agent.is_public,
-        require_api_key=agent.require_api_key, max_tool_calls=agent.max_tool_calls,
-        debug_result_limit=agent.debug_result_limit, tool_labels=_parse_tool_labels(agent),
-        project_ids=pids, created_by=agent.created_by, created_at=agent.created_at,
-    )
+    return _agent_response(agent, pids)
 
 
 @router.delete("/{agent_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -302,6 +313,7 @@ async def agent_chat(
         persisted_id: str | None = conv_id
         async for event in service.agent_toolcall_chat(
             db, projects, body.message, history, agent.system_prompt,
+            system_prompt_override=agent.system_prompt_override or "",
             max_tool_calls=agent.max_tool_calls,
             debug_result_limit=agent.debug_result_limit,
         ):

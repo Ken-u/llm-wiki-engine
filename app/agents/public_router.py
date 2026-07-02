@@ -240,6 +240,7 @@ async def public_agent_chat(
         persisted_id: str | None = conv_id
         async for event in service.agent_toolcall_chat(
             db, projects, body.message, history, agent.system_prompt,
+            system_prompt_override=agent.system_prompt_override or "",
             max_tool_calls=agent.max_tool_calls,
             debug_result_limit=agent.debug_result_limit,
         ):

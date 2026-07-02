@@ -1,6 +1,7 @@
 """Tests for LLM transient error retry behavior."""
 
 import asyncio
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -81,3 +82,148 @@ def test_complete_passes_configured_timeout_to_litellm():
         assert captured_kwargs["timeout"] == 300
 
     asyncio.run(run())
+
+
+def test_complete_with_tools_writes_debug_log_file_without_api_key(tmp_path):
+    log_dir = tmp_path / "llm-debug"
+
+    async def completion(**_kwargs):
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    finish_reason="tool_calls",
+                    message=SimpleNamespace(
+                        content=None,
+                        tool_calls=[
+                            SimpleNamespace(
+                                id="call-1",
+                                function=SimpleNamespace(
+                                    name="search_wiki",
+                                    arguments='{"query":"EDLA"}',
+                                ),
+                            )
+                        ],
+                    ),
+                ),
+            ],
+            usage=SimpleNamespace(prompt_tokens=12, completion_tokens=3, total_tokens=15),
+        )
+
+    async def run():
+        cfg = SimpleNamespace(
+            llm=SimpleNamespace(
+                provider="openai",
+                model="test-model",
+                api_key="secret-key",
+                api_base=None,
+                debug_llm_log=str(log_dir),
+                chat_temperature=0.7,
+                timeout=300,
+            )
+        )
+        litellm = SimpleNamespace(acompletion=completion)
+        with patch.object(client, "get_config", return_value=cfg):
+            with patch.object(client, "_litellm", return_value=litellm):
+                result = await client.complete_with_tools(
+                    [{"role": "user", "content": "查 EDLA"}],
+                    [{"type": "function", "function": {"name": "search_wiki"}}],
+                )
+        assert result.tool_calls[0].name == "search_wiki"
+
+    asyncio.run(run())
+
+    files = list(log_dir.glob("*.json"))
+    assert len(files) == 1
+    content = files[0].read_text(encoding="utf-8")
+    data = json.loads(content)
+    assert data["created_at"]
+    assert data["tools"][0]["function"]["name"] == "search_wiki"
+    assert data["llm"]["kind"] == "tool_completion"
+    assert data["llm"]["tools_ref"] == "tools"
+    assert "tools" not in data["llm"]["request"]
+    assert data["llm"]["request"]["messages"][0]["content"] == "查 EDLA"
+    assert data["llm"]["response"]["tool_calls"][0]["arguments"] == '{"query":"EDLA"}'
+    assert "secret-key" not in content
+
+
+def test_debug_log_context_groups_events_in_one_file(tmp_path):
+    log_dir = tmp_path / "llm-debug"
+    cfg = SimpleNamespace(llm=SimpleNamespace(debug_llm_log=str(log_dir)))
+
+    with patch.object(client, "get_config", return_value=cfg):
+        client.reset_debug_llm_log_context()
+        client.log_debug_llm_event("tool_execution", {"name": "search_wiki", "result": {"ok": True}})
+        client.log_debug_llm_event("tool_execution", {"name": "read_wiki", "result": {"ok": True}})
+        client.finish_debug_llm_log_context()
+
+    files = list(log_dir.glob("*.json"))
+    assert len(files) == 1
+    data = json.loads(files[0].read_text(encoding="utf-8"))
+    assert [event["name"] for event in data["tool_executions"]] == ["search_wiki", "read_wiki"]
+
+
+def test_debug_log_context_overwrites_latest_llm_snapshot(tmp_path):
+    log_dir = tmp_path / "llm-debug"
+    cfg = SimpleNamespace(
+        llm=SimpleNamespace(
+            provider="openai",
+            model="test-model",
+            api_key="secret-key",
+            api_base=None,
+            debug_llm_log=str(log_dir),
+            chat_temperature=0.7,
+            timeout=300,
+        )
+    )
+    calls = 0
+
+    async def completion(**_kwargs):
+        nonlocal calls
+        calls += 1
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    finish_reason="stop",
+                    message=SimpleNamespace(content=f"ok-{calls}", tool_calls=[]),
+                ),
+            ],
+            usage=SimpleNamespace(prompt_tokens=12, completion_tokens=3, total_tokens=15),
+        )
+
+    async def run():
+        litellm = SimpleNamespace(acompletion=completion)
+        with patch.object(client, "get_config", return_value=cfg):
+            with patch.object(client, "_litellm", return_value=litellm):
+                client.reset_debug_llm_log_context()
+                await client.complete_with_tools(
+                    [{"role": "user", "content": "first"}],
+                    [{"type": "function", "function": {"name": "search_wiki"}}],
+                )
+                await client.complete_with_tools(
+                    [{"role": "user", "content": "second"}],
+                    [{"type": "function", "function": {"name": "search_wiki"}}],
+                )
+                client.finish_debug_llm_log_context()
+
+    asyncio.run(run())
+
+    files = list(log_dir.glob("*.json"))
+    assert len(files) == 1
+    data = json.loads(files[0].read_text(encoding="utf-8"))
+    assert data["llm_call_count"] == 2
+    assert data["tools"][0]["function"]["name"] == "search_wiki"
+    assert data["llm"]["request"]["messages"][0]["content"] == "second"
+    assert data["llm"]["response"]["content"] == "ok-2"
+    assert "tools" not in data["llm"]["request"]
+
+
+def test_debug_log_without_context_writes_one_file_per_event(tmp_path):
+    log_dir = tmp_path / "llm-debug"
+    cfg = SimpleNamespace(llm=SimpleNamespace(debug_llm_log=str(log_dir)))
+
+    with patch.object(client, "get_config", return_value=cfg):
+        client.log_debug_llm_event("tool_execution", {"name": "first"})
+        client.log_debug_llm_event("tool_execution", {"name": "second"})
+
+    files = list(log_dir.glob("*.json"))
+    assert len(files) == 2

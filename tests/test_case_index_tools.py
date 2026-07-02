@@ -219,8 +219,15 @@ def test_system_prompt_includes_case_search_policy():
     assert "read_raw" in prompt
     assert "grep_raw" in prompt
     assert "session" in prompt
+    assert "[[caseid]]" in prompt
+    assert "[[...]]" in prompt
 
 
 def test_system_prompt_no_ticket_has_no_case_policy():
     prompt = _build_system_prompt("", has_ticket=False)
     assert "search_ticket_cases" not in prompt
+
+
+def test_system_prompt_override_replaces_default_policy():
+    prompt = _build_system_prompt("custom", has_ticket=True, override_prompt="override")
+    assert prompt == "override"

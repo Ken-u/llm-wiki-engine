@@ -33,6 +33,7 @@ def test_export_config_bundle_contains_only_config_state(tmp_path):
             db.add(ProjectMember(project_id="proj-1", user_id=1, role="owner"))
             db.add(Agent(
                 id="agent-1", name="Agent", description="desc", system_prompt="hi",
+                system_prompt_override="full prompt",
                 is_public=True, require_api_key=True, api_key_hash="keyhash",
                 max_tool_calls=9, debug_result_limit=99, tool_labels='{"a":"b"}', created_by=1,
             ))
@@ -55,6 +56,7 @@ def test_export_config_bundle_contains_only_config_state(tmp_path):
     assert "disk_path" not in bundle["projects"][0]
     assert bundle["project_members"][0]["role"] == "owner"
     assert bundle["agents"][0]["api_key_hash"] == "keyhash"
+    assert bundle["agents"][0]["system_prompt_override"] == "full prompt"
     assert bundle["agent_projects"][0]["project_id"] == "proj-1"
     assert bundle["system_settings"][0]["section"] == "llm"
     assert "ingest_jobs" not in bundle
@@ -119,6 +121,7 @@ def test_restore_config_bundle_replaces_existing_config_state(tmp_path, monkeypa
                     "name": "Agent",
                     "description": "desc",
                     "system_prompt": "hello",
+                    "system_prompt_override": "override prompt",
                     "is_public": False,
                     "require_api_key": True,
                     "api_key_hash": "api-hash",
@@ -160,5 +163,6 @@ def test_restore_config_bundle_replaces_existing_config_state(tmp_path, monkeypa
     assert projects[0].disk_path == "/tmp/dev-projects/proj-1"
     assert [m.role for m in members] == ["owner", "editor"]
     assert agents[0].name == "Agent"
+    assert agents[0].system_prompt_override == "override prompt"
     assert links[0].project_id == "proj-1"
     assert rows[0][0] == "llm"

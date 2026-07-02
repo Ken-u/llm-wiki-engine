@@ -48,6 +48,7 @@ class LLMConfig(BaseModel):
     model: str = "gpt-4o-mini"
     api_key: str = ""
     api_base: str | None = None
+    debug_llm_log: str = ""
     max_context_size: int = 128000
     context_compress_threshold: float = 0.85
     context_compress_target: float = 0.65

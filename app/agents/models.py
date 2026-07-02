@@ -17,6 +17,7 @@ class Agent(Base):
     name: Mapped[str] = mapped_column(String(128), nullable=False)
     description: Mapped[str] = mapped_column(Text, default="")
     system_prompt: Mapped[str] = mapped_column(Text, default="")
+    system_prompt_override: Mapped[str] = mapped_column(Text, default="")
     is_public: Mapped[bool] = mapped_column(Boolean, default=False)
     require_api_key: Mapped[bool] = mapped_column(Boolean, default=True)
     api_key_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)

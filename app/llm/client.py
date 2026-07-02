@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
+import json
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import AsyncGenerator, Awaitable, Callable, TypeVar
 
 from app.config import get_config, normalize_litellm_api_base
@@ -33,6 +37,10 @@ _TRANSIENT_ERROR_MARKERS = (
     "status code: 503",
     "status code: 504",
 )
+
+_debug_log_path: contextvars.ContextVar[Path | None] = contextvars.ContextVar("debug_llm_log_path", default=None)
+_debug_log_counter: contextvars.ContextVar[int] = contextvars.ContextVar("debug_llm_log_counter", default=0)
+_debug_log_group_active: contextvars.ContextVar[bool] = contextvars.ContextVar("debug_llm_log_group_active", default=False)
 
 
 def _litellm():
@@ -67,6 +75,147 @@ def _common_kwargs(temperature: float, max_tokens: int) -> dict:
     if cfg.api_base:
         kwargs["api_base"] = normalize_litellm_api_base(cfg.api_base)
     return kwargs
+
+
+def _jsonable(value):
+    if hasattr(value, "model_dump"):
+        return _jsonable(value.model_dump())
+    if hasattr(value, "dict"):
+        return _jsonable(value.dict())
+    if isinstance(value, dict):
+        return {str(k): _jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(v) for v in value]
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    if hasattr(value, "__dict__"):
+        return _jsonable(value.__dict__)
+    return repr(value)
+
+
+def _logged_kwargs(kwargs: dict) -> dict:
+    data = {k: v for k, v in kwargs.items() if k != "api_key"}
+    return _jsonable(data)
+
+
+def _debug_log_dir() -> Path | None:
+    dir_value = getattr(get_config().llm, "debug_llm_log", "")
+    if not dir_value:
+        return None
+    return Path(dir_value).expanduser()
+
+
+def _next_debug_log_path() -> Path | None:
+    log_dir = _debug_log_dir()
+    if log_dir is None:
+        return None
+    log_dir.mkdir(parents=True, exist_ok=True)
+    grouped = _debug_log_group_active.get()
+    if grouped:
+        existing = _debug_log_path.get()
+        if existing is not None:
+            return existing
+    now = datetime.now(timezone.utc)
+    count = _debug_log_counter.get() + 1
+    _debug_log_counter.set(count)
+    path = log_dir / f"{now.strftime('%Y%m%dT%H%M%S.%fZ')}-{count:04d}.json"
+    if grouped:
+        _debug_log_path.set(path)
+    return path
+
+
+def _write_debug_llm_log(entry: dict) -> None:
+    path = _next_debug_log_path()
+    if path is None:
+        return
+    payload = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        **entry,
+    }
+    if path.exists():
+        data = json.loads(path.read_text(encoding="utf-8"))
+    else:
+        data = {
+            "created_at": payload["timestamp"],
+        }
+    data["updated_at"] = payload["timestamp"]
+
+    if payload.get("kind") == "tool_execution":
+        data.setdefault("tool_executions", []).append({
+            "timestamp": payload["timestamp"],
+            **payload.get("data", {}),
+        })
+    elif payload.get("request") is not None:
+        request = dict(payload.get("request") or {})
+        tools = request.pop("tools", None)
+        if tools is not None:
+            data["tools"] = tools
+        llm_entry = {
+            "timestamp": payload["timestamp"],
+            "kind": payload.get("kind"),
+            "status": payload.get("status"),
+            "request": request,
+        }
+        if tools is not None:
+            llm_entry["tools_ref"] = "tools"
+        if payload.get("response") is not None:
+            llm_entry["response"] = payload["response"]
+        if payload.get("error") is not None:
+            llm_entry["error"] = payload["error"]
+        data["llm"] = llm_entry
+        data["llm_call_count"] = int(data.get("llm_call_count", 0)) + 1
+    else:
+        data.setdefault("records", []).append(payload)
+
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def reset_debug_llm_log_context() -> None:
+    _debug_log_path.set(None)
+    _debug_log_group_active.set(True)
+
+
+def finish_debug_llm_log_context() -> None:
+    _debug_log_path.set(None)
+    _debug_log_group_active.set(False)
+
+
+def _log_llm_success(kind: str, request: dict, response: dict) -> None:
+    try:
+        _write_debug_llm_log({
+            "kind": kind,
+            "status": "succeeded",
+            "request": _jsonable(request),
+            "response": _jsonable(response),
+        })
+    except Exception:
+        logger.exception("Failed to write debug LLM log")
+
+
+def _log_llm_error(kind: str, request: dict, exc: Exception) -> None:
+    try:
+        _write_debug_llm_log({
+            "kind": kind,
+            "status": "failed",
+            "request": _jsonable(request),
+            "error": {
+                "type": exc.__class__.__name__,
+                "message": str(exc),
+            },
+        })
+    except Exception:
+        logger.exception("Failed to write debug LLM log")
+
+
+def log_debug_llm_event(kind: str, data: dict) -> None:
+    try:
+        _write_debug_llm_log({
+            "kind": kind,
+            "status": "recorded",
+            "data": _jsonable(data),
+        })
+    except Exception:
+        logger.exception("Failed to write debug LLM log")
 
 
 def _is_transient_llm_error(exc: Exception) -> bool:
@@ -107,17 +256,23 @@ async def complete(
 ) -> str:
     litellm = _litellm()
     cfg = get_config().llm
-    resp = await _with_llm_retries(
-        "completion",
-        lambda: litellm.acompletion(
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            **_common_kwargs(temperature if temperature is not None else cfg.ingest_temperature, max_tokens),
-        ),
-    )
-    return resp.choices[0].message.content or ""
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ]
+    kwargs = _common_kwargs(temperature if temperature is not None else cfg.ingest_temperature, max_tokens)
+    request = {"messages": messages, **_logged_kwargs(kwargs)}
+    try:
+        resp = await _with_llm_retries(
+            "completion",
+            lambda: litellm.acompletion(messages=messages, **kwargs),
+        )
+        content = resp.choices[0].message.content or ""
+        _log_llm_success("completion", request, {"content": content, "raw": _jsonable(resp)})
+        return content
+    except Exception as exc:
+        _log_llm_error("completion", request, exc)
+        raise
 
 
 async def stream(
@@ -128,18 +283,27 @@ async def stream(
 ) -> AsyncGenerator[str, None]:
     litellm = _litellm()
     cfg = get_config().llm
-    resp = await _with_llm_retries(
-        "stream",
-        lambda: litellm.acompletion(
-            messages=messages,
-            stream=True,
-            **_common_kwargs(temperature if temperature is not None else cfg.chat_temperature, max_tokens),
-        ),
-    )
-    async for chunk in resp:
-        delta = chunk.choices[0].delta
-        if delta and delta.content:
-            yield delta.content
+    kwargs = _common_kwargs(temperature if temperature is not None else cfg.chat_temperature, max_tokens)
+    request = {"messages": messages, "stream": True, **_logged_kwargs(kwargs)}
+    parts: list[str] = []
+    try:
+        resp = await _with_llm_retries(
+            "stream",
+            lambda: litellm.acompletion(
+                messages=messages,
+                stream=True,
+                **kwargs,
+            ),
+        )
+        async for chunk in resp:
+            delta = chunk.choices[0].delta
+            if delta and delta.content:
+                parts.append(delta.content)
+                yield delta.content
+        _log_llm_success("stream", request, {"content": "".join(parts)})
+    except Exception as exc:
+        _log_llm_error("stream", request, exc)
+        raise
 
 
 async def stream_collect(
@@ -213,35 +377,48 @@ async def complete_with_tools(
         max_tokens,
     )
     kwargs["tools"] = tools
+    request = {"messages": messages, **_logged_kwargs(kwargs)}
 
-    resp = await _with_llm_retries(
-        "tool_completion",
-        lambda: litellm.acompletion(messages=messages, **kwargs),
-    )
-    choice = resp.choices[0]
-    msg = choice.message
-
-    tool_calls = []
-    if msg.tool_calls:
-        for tc in msg.tool_calls:
-            tool_calls.append(ToolCallRequest(
-                id=tc.id,
-                name=tc.function.name,
-                arguments=tc.function.arguments,
-            ))
-
-    usage = None
-    if getattr(resp, "usage", None):
-        u = resp.usage
-        usage = TokenUsage(
-            prompt_tokens=getattr(u, "prompt_tokens", 0) or 0,
-            completion_tokens=getattr(u, "completion_tokens", 0) or 0,
-            total_tokens=getattr(u, "total_tokens", 0) or 0,
+    try:
+        resp = await _with_llm_retries(
+            "tool_completion",
+            lambda: litellm.acompletion(messages=messages, **kwargs),
         )
+        choice = resp.choices[0]
+        msg = choice.message
 
-    return LLMResponse(
-        content=msg.content,
-        tool_calls=tool_calls,
-        finish_reason=choice.finish_reason,
-        usage=usage,
-    )
+        tool_calls = []
+        if msg.tool_calls:
+            for tc in msg.tool_calls:
+                tool_calls.append(ToolCallRequest(
+                    id=tc.id,
+                    name=tc.function.name,
+                    arguments=tc.function.arguments,
+                ))
+
+        usage = None
+        if getattr(resp, "usage", None):
+            u = resp.usage
+            usage = TokenUsage(
+                prompt_tokens=getattr(u, "prompt_tokens", 0) or 0,
+                completion_tokens=getattr(u, "completion_tokens", 0) or 0,
+                total_tokens=getattr(u, "total_tokens", 0) or 0,
+            )
+
+        result = LLMResponse(
+            content=msg.content,
+            tool_calls=tool_calls,
+            finish_reason=choice.finish_reason,
+            usage=usage,
+        )
+        _log_llm_success("tool_completion", request, {
+            "content": result.content,
+            "tool_calls": [tc.__dict__ for tc in result.tool_calls],
+            "finish_reason": result.finish_reason,
+            "usage": result.usage.__dict__ if result.usage else None,
+            "raw": _jsonable(resp),
+        })
+        return result
+    except Exception as exc:
+        _log_llm_error("tool_completion", request, exc)
+        raise

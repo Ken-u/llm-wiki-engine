@@ -84,6 +84,7 @@ async def create_agent(
     project_ids: list[str],
     is_public: bool,
     require_api_key: bool,
+    system_prompt_override: str = "",
     max_tool_calls: int = 20,
     debug_result_limit: int = 2000,
     tool_labels: dict[str, str] | None = None,
@@ -102,6 +103,7 @@ async def create_agent(
         name=name,
         description=description,
         system_prompt=system_prompt,
+        system_prompt_override=system_prompt_override,
         is_public=is_public,
         require_api_key=require_api_key,
         max_tool_calls=max_tool_calls,
@@ -128,6 +130,7 @@ async def update_agent(
     name: str | None = None,
     description: str | None = None,
     system_prompt: str | None = None,
+    system_prompt_override: str | None = None,
     project_ids: list[str] | None = None,
     is_public: bool | None = None,
     require_api_key: bool | None = None,
@@ -141,6 +144,8 @@ async def update_agent(
         agent.description = description
     if system_prompt is not None:
         agent.system_prompt = system_prompt
+    if system_prompt_override is not None:
+        agent.system_prompt_override = system_prompt_override
     if is_public is not None:
         agent.is_public = is_public
     if require_api_key is not None:
@@ -305,6 +310,7 @@ async def agent_toolcall_chat(
     message: str,
     history: list[dict],
     system_prompt: str,
+    system_prompt_override: str = "",
     max_tool_calls: int = 20,
     debug_result_limit: int = 2000,
     include_ticket_project: bool = True,
@@ -325,6 +331,7 @@ async def agent_toolcall_chat(
 
     async for event in run_agent_turn(
         message, history, system_prompt, ctx,
+        system_prompt_override=system_prompt_override,
         max_tool_calls=max_tool_calls,
         debug_result_limit=debug_result_limit,
     ):

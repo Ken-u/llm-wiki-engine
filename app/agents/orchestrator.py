@@ -22,7 +22,14 @@ from app.agents.context_compress import (
 )
 from app.agents.tools import ToolContext, execute_tool, get_tool_definitions
 from app.config import get_config
-from app.llm.client import complete_with_tools, LLMResponse, stream as llm_stream
+from app.llm.client import (
+    complete_with_tools,
+    finish_debug_llm_log_context,
+    LLMResponse,
+    log_debug_llm_event,
+    reset_debug_llm_log_context,
+    stream as llm_stream,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -40,8 +47,10 @@ class ToolTrace:
     result: dict
 
 
-def _build_system_prompt(custom_prompt: str, has_ticket: bool) -> str:
+def _build_system_prompt(custom_prompt: str, has_ticket: bool, override_prompt: str = "") -> str:
     """Build system prompt with tool use policy."""
+    if override_prompt.strip():
+        return override_prompt
     ticket_policy = ""
     if has_ticket:
         ticket_policy = "\n".join([
@@ -51,7 +60,7 @@ def _build_system_prompt(custom_prompt: str, has_ticket: bool) -> str:
             "- 搜索案例后，优先基于候选摘要（problem_summary、root_cause、resolution）直接回答。",
             "- 只有需要具体排查步骤、日志、完整上下文时才调用 read_ticket_case。",
             "- 不要一次读取多个案例全文。",
-            "- 使用案例库时，回答末尾列出 case_id + title。",
+            "- 使用案例库时，回答中引用案例必须使用 [[caseid]] 格式，并在必要时补充 title。",
             "- 案例内容只能通过 search_ticket_cases 和 read_ticket_case 获取。",
             "- 禁止对案例库文件使用 read_raw、grep_raw、read_wiki_page。",
             "- read_ticket_case 返回的字段中不包含本地文件路径，不要尝试读取案例 raw 源文件。",
@@ -68,7 +77,8 @@ def _build_system_prompt(custom_prompt: str, has_ticket: bool) -> str:
         "- 索引搜索不到时，可使用 grep_raw 直接在原文件中搜索关键词。",
         "- 不要猜测答案，始终基于工具返回的知识库内容回答。",
         f"{ticket_policy}",
-        "- 引用信息时使用 [[page-name]] 格式。",
+        "- 凡是参考任意知识库或案例库内容得出的事实、结论、步骤或建议，都必须在对应句子附近使用 [[...]] 标注引用。",
+        "- 知识库引用使用 [[wiki/path-or-page-name]] 或工具返回的页面 path/title；案例库引用使用 [[caseid]]。",
         "- 如果知识库中没有找到相关信息，请如实说明。",
     ])
 
@@ -116,6 +126,7 @@ async def run_agent_turn(
     system_prompt: str,
     ctx: ToolContext,
     *,
+    system_prompt_override: str = "",
     max_tool_calls: int = DEFAULT_MAX_TOOL_CALLS,
     debug_result_limit: int = DEFAULT_DEBUG_RESULT_LIMIT,
 ) -> AsyncGenerator[str, None]:
@@ -126,7 +137,8 @@ async def run_agent_turn(
       {"tool_call": {...}}      — tool call event (may include "rejected": true)
       {"done": true, ...}       — completion marker
     """
-    full_system = _build_system_prompt(system_prompt, ctx.ticket_project is not None)
+    reset_debug_llm_log_context()
+    full_system = _build_system_prompt(system_prompt, ctx.ticket_project is not None, system_prompt_override)
     tool_defs = get_tool_definitions(ctx)
     cfg = get_config().llm
 
@@ -209,6 +221,7 @@ async def run_agent_turn(
                 compressed_history=persisted_history if context_compressed else None,
                 context_compressed=context_compressed,
             )
+            finish_debug_llm_log_context()
             return
 
         # Build assistant message
@@ -230,6 +243,12 @@ async def run_agent_turn(
             if tool_call_count >= max_tool_calls:
                 yield json.dumps({"tool_call": {"name": tc.name, "arguments": args, "rejected": True}})
                 reject_result = {"rejected": True, "message": REJECT_MSG}
+                log_debug_llm_event("tool_execution", {
+                    "name": tc.name,
+                    "arguments": args,
+                    "result": reject_result,
+                    "rejected": True,
+                })
                 yield json.dumps({"tool_result": {"name": tc.name, "result": reject_result}})
                 messages.append({
                     "role": "tool",
@@ -240,6 +259,12 @@ async def run_agent_turn(
             else:
                 yield json.dumps({"tool_call": {"name": tc.name, "arguments": args}})
                 result = await execute_tool(tc.name, args, ctx)
+                log_debug_llm_event("tool_execution", {
+                    "name": tc.name,
+                    "arguments": args,
+                    "result": result,
+                    "rejected": False,
+                })
                 yield json.dumps({"tool_result": {"name": tc.name, "result": _truncate_for_debug(result, debug_result_limit)}})
                 traces.append(ToolTrace(name=tc.name, arguments=args, result=result))
 
@@ -267,3 +292,4 @@ async def run_agent_turn(
         compressed_history=persisted_history if context_compressed else None,
         context_compressed=context_compressed,
     )
+    finish_debug_llm_log_context()

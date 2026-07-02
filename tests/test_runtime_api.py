@@ -154,6 +154,40 @@ def test_runtime_yaml_config_round_trip_preserves_redacted_keys(tmp_path: Path):
     assert "embedding-secret-key" in saved
 
 
+def test_runtime_system_prompt_config_round_trip(tmp_path: Path):
+    config = _write_runtime_fixture(tmp_path)
+    load_runtime_config(config)
+
+    from app.runtime.config import get_runtime_config
+    from app.runtime_main import app
+
+    with TestClient(app) as client:
+        resp = client.get("/api/config/system-prompt")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["path"] == str(config.resolve())
+        assert data["system_prompt"] == "Test prompt"
+        assert "[[...]]" in data["default_system_prompt"]
+
+        save_resp = client.put(
+            "/api/config/system-prompt",
+            json={
+                "system_prompt": "Runtime base prompt",
+                "system_prompt_override": "Runtime full override",
+            },
+        )
+
+    assert save_resp.status_code == 200
+    saved = save_resp.json()
+    assert saved["system_prompt"] == "Runtime base prompt"
+    assert saved["system_prompt_override"] == "Runtime full override"
+    assert get_runtime_config().knowledge.system_prompt == "Runtime base prompt"
+    assert get_runtime_config().knowledge.system_prompt_override == "Runtime full override"
+    text = config.read_text(encoding="utf-8")
+    assert "system_prompt: Runtime base prompt" in text
+    assert "system_prompt_override: Runtime full override" in text
+
+
 def test_runtime_search_keyword(tmp_path: Path):
     config = _write_runtime_fixture(tmp_path)
     load_runtime_config(config)

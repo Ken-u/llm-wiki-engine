@@ -11,6 +11,9 @@ knowledge:
   system_prompt: |
     你是知识库问答助手。只能基于知识库和案例库内容回答。
     如果没有找到依据，请明确说明未找到相关信息。
+  # Optional. When set, this fully replaces the final Agent system prompt,
+  # including the default tool/citation policy.
+  system_prompt_override: ""
 
 case_library:
   enabled: true
@@ -22,6 +25,11 @@ llm:
   model: gpt-4o-mini
   api_key: ${LLM_API_KEY}
   api_base: null  # OpenAI-compatible gateway root; /v1 is appended automatically
+  # Optional directory for full LLM request/response debugging.
+  # Relative paths are resolved from this runtime config file.
+  # Each request writes one timestamped JSON file.
+  # Includes messages, tool schemas, tool calls, and tool execution results; api_key is never logged.
+  debug_llm_log: ""
   max_context_size: 128000
   context_compress_threshold: 0.85
   context_compress_target: 0.65
