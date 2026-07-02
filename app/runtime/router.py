@@ -51,8 +51,12 @@ class RuntimeSearchRequest(BaseModel):
 
 
 class RuntimeReindexResponse(BaseModel):
-    pages: int
-    chunks: int
+    knowledge: dict[str, int] | None = None
+    cases: dict[str, Any] | None = None
+
+
+class RuntimeReindexRequest(BaseModel):
+    target: Literal["knowledge", "cases", "all"] = "knowledge"
 
 
 class RuntimeCaseSearchRequest(BaseModel):
@@ -166,12 +170,34 @@ async def search_response(body: RuntimeSearchRequest):
     }
 
 
-@router.post("/search/reindex", response_model=RuntimeReindexResponse)
+@router.post("/search/reindex")
 async def rebuild_vector_index_response():
     project = get_knowledge_project()
     from app.embedding.service import rebuild_project_embeddings
 
     return await rebuild_project_embeddings(project.disk_path)
+
+
+@router.post("/indexes/rebuild", response_model=RuntimeReindexResponse)
+async def rebuild_indexes_response(body: RuntimeReindexRequest):
+    response = RuntimeReindexResponse()
+
+    if body.target in ("knowledge", "all"):
+        project = get_knowledge_project()
+        from app.embedding.service import rebuild_project_embeddings
+
+        response.knowledge = await rebuild_project_embeddings(project.disk_path)
+
+    if body.target in ("cases", "all"):
+        case_project = get_case_project()
+        if case_project is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Case library is disabled")
+        from app.case_index.builder import rebuild_case_index
+
+        manifest = await rebuild_case_index(case_project.disk_path)
+        response.cases = manifest.to_dict()
+
+    return response
 
 
 @router.post("/cases/search")
