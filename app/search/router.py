@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.deps import get_current_user
 from app.auth.models import User
 from app.database import get_db
+from app.index_tasks import (
+    IndexRebuildTaskResponse,
+    create_index_task,
+    get_index_task,
+    has_active_index_task,
+    set_index_task,
+)
 from app.projects.service import check_membership, get_project_or_404
 from app.search.bm25 import search_bm25
 from app.search.fusion import FusedResult, rrf_fusion
@@ -41,6 +48,29 @@ class SearchResponse(BaseModel):
 class ReindexResponse(BaseModel):
     pages: int
     chunks: int
+
+
+async def _run_vector_reindex_task(task_id: str, disk_path: str) -> None:
+    try:
+        set_index_task(task_id, status="running", progress=10, stage="重建知识库向量索引")
+        from app.embedding.service import rebuild_project_embeddings
+
+        result = await rebuild_project_embeddings(disk_path)
+        set_index_task(
+            task_id,
+            status="succeeded",
+            progress=100,
+            stage="知识库向量索引已重建",
+            result=result,
+        )
+    except Exception as exc:
+        set_index_task(
+            task_id,
+            status="failed",
+            progress=100,
+            stage="知识库向量索引重建失败",
+            error=str(exc),
+        )
 
 
 @router.post("", response_model=SearchResponse)
@@ -102,3 +132,33 @@ async def rebuild_vector_index(
     from app.embedding.service import rebuild_project_embeddings
 
     return await rebuild_project_embeddings(project.disk_path)
+
+
+@router.post("/reindex/tasks", response_model=IndexRebuildTaskResponse, status_code=status.HTTP_202_ACCEPTED)
+async def start_vector_reindex_task(
+    project_id: str,
+    background_tasks: BackgroundTasks,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await check_membership(db, project_id, user)
+    project = await get_project_or_404(db, project_id)
+    if has_active_index_task(target="knowledge", project_id=project_id):
+        raise HTTPException(status.HTTP_409_CONFLICT, "Rebuild already in progress")
+    task = create_index_task("knowledge", project_id=project_id)
+    background_tasks.add_task(_run_vector_reindex_task, task.task_id, project.disk_path)
+    return task
+
+
+@router.get("/reindex/tasks/{task_id}", response_model=IndexRebuildTaskResponse)
+async def get_vector_reindex_status(
+    project_id: str,
+    task_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await check_membership(db, project_id, user)
+    task = get_index_task(task_id)
+    if task is None or task.project_id != project_id or task.target != "knowledge":
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Rebuild task not found")
+    return task

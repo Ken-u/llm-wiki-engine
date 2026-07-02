@@ -11,7 +11,7 @@ from typing import Any, Literal
 
 import aiofiles
 import yaml
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from starlette.responses import PlainTextResponse, StreamingResponse
 
@@ -19,6 +19,13 @@ from app.agents.orchestrator import run_agent_turn
 from app.agents.tools import ToolContext
 from app.case_index.builder import load_manifest
 from app.case_index.search import read_case_source, search_cases
+from app.index_tasks import (
+    IndexRebuildTaskResponse,
+    create_index_task,
+    get_index_task,
+    has_active_index_task,
+    set_index_task,
+)
 from app.knowledge.fast_lookup import (
     extract_term_from_definition_query,
     fast_lookup,
@@ -178,17 +185,22 @@ async def rebuild_vector_index_response():
     return await rebuild_project_embeddings(project.disk_path)
 
 
-@router.post("/indexes/rebuild", response_model=RuntimeReindexResponse)
-async def rebuild_indexes_response(body: RuntimeReindexRequest):
+async def _rebuild_indexes(body: RuntimeReindexRequest, task_id: str | None = None) -> RuntimeReindexResponse:
     response = RuntimeReindexResponse()
 
     if body.target in ("knowledge", "all"):
+        if task_id:
+            set_index_task(task_id, status="running", progress=10, stage="重建知识库向量索引")
         project = get_knowledge_project()
         from app.embedding.service import rebuild_project_embeddings
 
         response.knowledge = await rebuild_project_embeddings(project.disk_path)
+        if task_id:
+            set_index_task(task_id, progress=55 if body.target == "all" else 90, stage="知识库向量索引已重建")
 
     if body.target in ("cases", "all"):
+        if task_id:
+            set_index_task(task_id, status="running", progress=60 if body.target == "all" else 10, stage="重建案例库索引")
         case_project = get_case_project()
         if case_project is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Case library is disabled")
@@ -196,8 +208,44 @@ async def rebuild_indexes_response(body: RuntimeReindexRequest):
 
         manifest = await rebuild_case_index(case_project.disk_path)
         response.cases = manifest.to_dict()
+        if task_id:
+            set_index_task(task_id, progress=90, stage="案例库索引已重建")
 
     return response
+
+
+async def _run_rebuild_indexes_task(task_id: str, body: RuntimeReindexRequest) -> None:
+    try:
+        result = await _rebuild_indexes(body, task_id)
+        set_index_task(
+            task_id,
+            status="succeeded",
+            progress=100,
+            stage="索引重建完成",
+            result=result.model_dump(),
+        )
+    except HTTPException as exc:
+        set_index_task(task_id, status="failed", progress=100, stage="索引重建失败", error=str(exc.detail))
+    except Exception as exc:
+        set_index_task(task_id, status="failed", progress=100, stage="索引重建失败", error=str(exc))
+
+
+@router.post("/indexes/rebuild", response_model=IndexRebuildTaskResponse, status_code=status.HTTP_202_ACCEPTED)
+async def start_rebuild_indexes_response(body: RuntimeReindexRequest, background_tasks: BackgroundTasks):
+    target = f"runtime:{body.target}"
+    if has_active_index_task(target=target):
+        raise HTTPException(status.HTTP_409_CONFLICT, "Rebuild already in progress")
+    task = create_index_task(target)
+    background_tasks.add_task(_run_rebuild_indexes_task, task.task_id, body)
+    return task
+
+
+@router.get("/indexes/rebuild/{task_id}", response_model=IndexRebuildTaskResponse)
+async def get_rebuild_indexes_status(task_id: str):
+    task = get_index_task(task_id)
+    if task is None or not task.target.startswith("runtime:"):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Rebuild task not found")
+    return task
 
 
 @router.post("/cases/search")

@@ -47,14 +47,22 @@ def test_rebuild_project_embeddings_clears_lancedb_and_embeds_all_wiki_pages(tmp
 
 
 def test_search_router_exposes_reindex_response_model():
+    from app.index_tasks import IndexRebuildTaskResponse
     from app.search.router import ReindexResponse, router
 
     routes = [
         route for route in router.routes
         if getattr(route, "path", "") == "/api/projects/{project_id}/search/reindex"
     ]
+    task_routes = [
+        route for route in router.routes
+        if getattr(route, "path", "") == "/api/projects/{project_id}/search/reindex/tasks"
+    ]
 
     assert routes
+    assert task_routes
+    assert routes[0].response_model is ReindexResponse
+    assert task_routes[0].response_model is IndexRebuildTaskResponse
     assert ReindexResponse.model_fields["pages"].annotation is int
     assert ReindexResponse.model_fields["chunks"].annotation is int
 

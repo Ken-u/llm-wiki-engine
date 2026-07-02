@@ -167,12 +167,17 @@ def test_runtime_indexes_rebuild_all_rebuilds_knowledge_and_cases(tmp_path: Path
         with patch("app.case_index.builder.rebuild_case_index", AsyncMock(return_value=manifest)) as rebuild_cases:
             with TestClient(app) as client:
                 resp = client.post("/api/indexes/rebuild", json={"target": "all"})
+                task_id = resp.json()["task_id"]
+                status_resp = client.get(f"/api/indexes/rebuild/{task_id}")
 
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["knowledge"] == {"pages": 3, "chunks": 9}
-    assert data["cases"]["status"] == "ready"
-    assert data["cases"]["case_count"] == 2
+    assert resp.status_code == 202
+    assert status_resp.status_code == 200
+    data = status_resp.json()
+    assert data["status"] == "succeeded"
+    assert data["progress"] == 100
+    assert data["result"]["knowledge"] == {"pages": 3, "chunks": 9}
+    assert data["result"]["cases"]["status"] == "ready"
+    assert data["result"]["cases"]["case_count"] == 2
     assert rebuild_kb.await_args.args[0] == str(tmp_path / "data" / "knowledge")
     assert rebuild_cases.await_args.args[0] == str(tmp_path / "data" / "cases")
 
@@ -185,8 +190,13 @@ def test_runtime_indexes_rebuild_cases_requires_enabled_case_library(tmp_path: P
 
     with TestClient(app) as client:
         resp = client.post("/api/indexes/rebuild", json={"target": "cases"})
+        task_id = resp.json()["task_id"]
+        status_resp = client.get(f"/api/indexes/rebuild/{task_id}")
 
-    assert resp.status_code == 404
+    assert resp.status_code == 202
+    assert status_resp.status_code == 200
+    assert status_resp.json()["status"] == "failed"
+    assert "Case library is disabled" in status_resp.json()["error"]
 
 
 def test_runtime_chat_fast_stream(tmp_path: Path):

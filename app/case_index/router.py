@@ -13,6 +13,13 @@ from app.auth.models import User
 from app.case_index.builder import load_manifest, rebuild_case_index, is_case_index_stale
 from app.case_index.search import search_cases, read_case_source
 from app.database import get_db
+from app.index_tasks import (
+    IndexRebuildTaskResponse,
+    create_index_task,
+    get_index_task,
+    has_active_index_task,
+    set_index_task,
+)
 from app.projects.service import check_membership, get_project_or_404, resolve_case_library_project
 
 logger = logging.getLogger(__name__)
@@ -86,11 +93,29 @@ async def case_index_status(
 _rebuild_locks: dict[str, bool] = {}
 
 
-async def _do_rebuild(project_id: str, disk_path: str):
+async def _do_rebuild(project_id: str, disk_path: str, task_id: str | None = None):
     try:
         _rebuild_locks[project_id] = True
-        await rebuild_case_index(disk_path)
-    except Exception:
+        if task_id is not None:
+            set_index_task(task_id, status="running", progress=10, stage="重建案例库索引")
+        manifest = await rebuild_case_index(disk_path)
+        if task_id is not None:
+            set_index_task(
+                task_id,
+                status="succeeded",
+                progress=100,
+                stage="案例库索引已重建",
+                result=manifest.to_dict(),
+            )
+    except Exception as exc:
+        if task_id is not None:
+            set_index_task(
+                task_id,
+                status="failed",
+                progress=100,
+                stage="案例库索引重建失败",
+                error=str(exc),
+            )
         logger.exception("Case index rebuild failed for %s", project_id)
     finally:
         _rebuild_locks.pop(project_id, None)
@@ -106,12 +131,45 @@ async def trigger_rebuild(
     await check_membership(db, project_id, user)
     project = await get_project_or_404(db, project_id)
     _require_case_library(project)
-    if _rebuild_locks.get(project_id):
+    if _rebuild_locks.get(project_id) or has_active_index_task(target="cases", project_id=project_id):
         raise HTTPException(
             status.HTTP_409_CONFLICT, "Rebuild already in progress"
         )
     background_tasks.add_task(_do_rebuild, project_id, project.disk_path)
     return {"status": "rebuilding"}
+
+
+@router.post("/rebuild/tasks", response_model=IndexRebuildTaskResponse, status_code=status.HTTP_202_ACCEPTED)
+async def start_rebuild_task(
+    project_id: str,
+    background_tasks: BackgroundTasks,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await check_membership(db, project_id, user)
+    project = await get_project_or_404(db, project_id)
+    _require_case_library(project)
+    if _rebuild_locks.get(project_id) or has_active_index_task(target="cases", project_id=project_id):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "Rebuild already in progress"
+        )
+    task = create_index_task("cases", project_id=project_id)
+    background_tasks.add_task(_do_rebuild, project_id, project.disk_path, task.task_id)
+    return task
+
+
+@router.get("/rebuild/tasks/{task_id}", response_model=IndexRebuildTaskResponse)
+async def get_rebuild_status(
+    project_id: str,
+    task_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await check_membership(db, project_id, user)
+    task = get_index_task(task_id)
+    if task is None or task.project_id != project_id or task.target != "cases":
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Rebuild task not found")
+    return task
 
 
 @router.post("/search")
