@@ -49,6 +49,9 @@ while [[ $# -gt 0 ]]; do
 done
 
 build_linux() {
+  if [[ -d ../llm-wiki-ui && "${SKIP_RUNTIME_UI_BUILD:-0}" != "1" ]]; then
+    npm --prefix ../llm-wiki-ui run build:runtime
+  fi
   uv sync --extra dev
   local outdir="dist/runtime/linux-x86_64"
   local tmpdist="dist/.tmp-runtime-build"

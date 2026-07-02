@@ -3,6 +3,11 @@ setlocal
 
 cd /d "%~dp0\.."
 
+if not "%SKIP_RUNTIME_UI_BUILD%"=="1" if exist ..\llm-wiki-ui\package.json (
+  npm --prefix ..\llm-wiki-ui run build:runtime
+  if errorlevel 1 exit /b %errorlevel%
+)
+
 uv sync --extra dev
 if errorlevel 1 exit /b %errorlevel%
 

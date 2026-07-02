@@ -81,6 +81,8 @@ GET  /v1/models
 POST /v1/chat/completions       # 支持 stream=true
 ```
 
+Runtime 自带的网页由相邻仓库 `../llm-wiki-ui` 的 runtime 专用入口构建而来。若本地存在该目录，打包脚本会先执行 `npm --prefix ../llm-wiki-ui run build:runtime` 并刷新 `app/runtime/ui_dist`；若只想使用当前已生成的静态产物，可设置 `SKIP_RUNTIME_UI_BUILD=1`。
+
 ### 打包 Runtime 单文件
 
 本地平台打包：
