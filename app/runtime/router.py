@@ -22,6 +22,7 @@ from app.case_index.search import read_case_source, search_cases
 from app.index_tasks import (
     IndexRebuildTaskResponse,
     create_index_task,
+    get_active_index_task,
     get_index_task,
     has_active_index_task,
     set_index_task,
@@ -238,6 +239,15 @@ async def start_rebuild_indexes_response(body: RuntimeReindexRequest, background
     task = create_index_task(target)
     background_tasks.add_task(_run_rebuild_indexes_task, task.task_id, body)
     return task
+
+
+@router.get("/indexes/rebuild/current", response_model=IndexRebuildTaskResponse | None)
+async def get_current_rebuild_indexes_status():
+    return (
+        get_active_index_task(target="runtime:all")
+        or get_active_index_task(target="runtime:knowledge")
+        or get_active_index_task(target="runtime:cases")
+    )
 
 
 @router.get("/indexes/rebuild/{task_id}", response_model=IndexRebuildTaskResponse)

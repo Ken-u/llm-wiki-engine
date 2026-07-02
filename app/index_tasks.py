@@ -42,16 +42,20 @@ def get_index_task(task_id: str) -> IndexRebuildTaskResponse | None:
     return _tasks.get(task_id)
 
 
-def has_active_index_task(*, target: str | None = None, project_id: str | None = None) -> bool:
-    for task in _tasks.values():
+def get_active_index_task(*, target: str | None = None, project_id: str | None = None) -> IndexRebuildTaskResponse | None:
+    for task in reversed(list(_tasks.values())):
         if task.status not in ("queued", "running"):
             continue
         if target is not None and task.target != target:
             continue
         if project_id is not None and task.project_id != project_id:
             continue
-        return True
-    return False
+        return task
+    return None
+
+
+def has_active_index_task(*, target: str | None = None, project_id: str | None = None) -> bool:
+    return get_active_index_task(target=target, project_id=project_id) is not None
 
 
 def set_index_task(

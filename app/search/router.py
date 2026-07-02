@@ -12,6 +12,7 @@ from app.database import get_db
 from app.index_tasks import (
     IndexRebuildTaskResponse,
     create_index_task,
+    get_active_index_task,
     get_index_task,
     has_active_index_task,
     set_index_task,
@@ -148,6 +149,16 @@ async def start_vector_reindex_task(
     task = create_index_task("knowledge", project_id=project_id)
     background_tasks.add_task(_run_vector_reindex_task, task.task_id, project.disk_path)
     return task
+
+
+@router.get("/reindex/tasks/current", response_model=IndexRebuildTaskResponse | None)
+async def get_current_vector_reindex_task(
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await check_membership(db, project_id, user)
+    return get_active_index_task(target="knowledge", project_id=project_id)
 
 
 @router.get("/reindex/tasks/{task_id}", response_model=IndexRebuildTaskResponse)

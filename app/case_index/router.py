@@ -16,6 +16,7 @@ from app.database import get_db
 from app.index_tasks import (
     IndexRebuildTaskResponse,
     create_index_task,
+    get_active_index_task,
     get_index_task,
     has_active_index_task,
     set_index_task,
@@ -156,6 +157,16 @@ async def start_rebuild_task(
     task = create_index_task("cases", project_id=project_id)
     background_tasks.add_task(_do_rebuild, project_id, project.disk_path, task.task_id)
     return task
+
+
+@router.get("/rebuild/tasks/current", response_model=IndexRebuildTaskResponse | None)
+async def get_current_rebuild_task(
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await check_membership(db, project_id, user)
+    return get_active_index_task(target="cases", project_id=project_id)
 
 
 @router.get("/rebuild/tasks/{task_id}", response_model=IndexRebuildTaskResponse)
