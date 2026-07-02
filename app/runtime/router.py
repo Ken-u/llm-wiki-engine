@@ -11,7 +11,7 @@ from typing import Any, Literal
 
 import aiofiles
 import yaml
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from starlette.responses import PlainTextResponse, StreamingResponse
 
@@ -80,6 +80,11 @@ class RuntimeChatRequest(BaseModel):
     debug: bool = True
 
 
+class RuntimeYamlConfigResponse(BaseModel):
+    path: str
+    content: str
+
+
 def _redact_config(data: dict[str, Any]) -> dict[str, Any]:
     for section in ("llm", "embedding"):
         key = data.get(section, {}).get("api_key", "")
@@ -103,6 +108,22 @@ def _preserve_redacted_keys(body: dict[str, Any]) -> dict[str, Any]:
     return body
 
 
+def _runtime_config_path_or_500() -> Path:
+    path = get_runtime_config_path()
+    if path is None:
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Runtime config path not initialized")
+    return path
+
+
+def _dump_runtime_yaml(data: dict[str, Any]) -> str:
+    return yaml.safe_dump(data, allow_unicode=True, sort_keys=False)
+
+
+def _build_yaml_config_response(path: Path) -> RuntimeYamlConfigResponse:
+    redacted = _redact_config(get_runtime_config().model_dump())
+    return RuntimeYamlConfigResponse(path=str(path), content=_dump_runtime_yaml(redacted))
+
+
 @router.get("/status")
 async def status_response():
     return await build_status(get_runtime_config())
@@ -115,15 +136,30 @@ async def get_config_response():
 
 @router.put("/config")
 async def update_config_response(body: dict[str, Any]):
-    path = get_runtime_config_path()
-    if path is None:
-        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Runtime config path not initialized")
+    path = _runtime_config_path_or_500()
     body = _preserve_redacted_keys(body)
-    path.write_text(
-        yaml.safe_dump(body, allow_unicode=True, sort_keys=False),
-        encoding="utf-8",
-    )
+    path.write_text(_dump_runtime_yaml(body), encoding="utf-8")
     return _redact_config(load_runtime_config(path).model_dump())
+
+
+@router.get("/config/yaml", response_model=RuntimeYamlConfigResponse)
+async def get_yaml_config_response():
+    return _build_yaml_config_response(_runtime_config_path_or_500())
+
+
+@router.put("/config/yaml", response_model=RuntimeYamlConfigResponse)
+async def update_yaml_config_response(content: str = Body(media_type="text/plain")):
+    path = _runtime_config_path_or_500()
+    try:
+        data = yaml.safe_load(content) or {}
+    except yaml.YAMLError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Invalid YAML: {exc}") from exc
+    if not isinstance(data, dict):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Runtime config YAML must be a mapping")
+    data = _preserve_redacted_keys(data)
+    path.write_text(_dump_runtime_yaml(data), encoding="utf-8")
+    load_runtime_config(path)
+    return _build_yaml_config_response(path)
 
 
 @router.post("/hooks/run")

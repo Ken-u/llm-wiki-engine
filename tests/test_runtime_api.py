@@ -114,6 +114,46 @@ def test_runtime_status_models_and_wiki(tmp_path: Path):
         assert "EDLA 是本地测试知识" in page["content"]
 
 
+def test_runtime_yaml_config_round_trip_preserves_redacted_keys(tmp_path: Path):
+    config = _write_runtime_fixture(tmp_path)
+    text = config.read_text(encoding="utf-8")
+    text = text.replace(
+        "llm:\n  provider: openai\n  model: test-model\n  api_key: \"\"",
+        "llm:\n  provider: openai\n  model: test-model\n  api_key: \"llm-secret-key\"",
+    )
+    text = text.replace(
+        "embedding:\n  enabled: false\n  provider: openai\n  model: test-embedding\n  api_key: \"\"",
+        "embedding:\n  enabled: false\n  provider: openai\n  model: test-embedding\n  api_key: \"embedding-secret-key\"",
+    )
+    config.write_text(text, encoding="utf-8")
+    load_runtime_config(config)
+
+    from app.runtime_main import app
+
+    with TestClient(app) as client:
+        resp = client.get("/api/config/yaml")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["path"] == str(config.resolve())
+        assert "llm-secret-key" not in data["content"]
+        assert "embedding-secret-key" not in data["content"]
+        assert "llm-...-key" in data["content"]
+        assert "embe...-key" in data["content"]
+
+        updated = data["content"].replace("model: test-model", "model: saved-model")
+        save_resp = client.put(
+            "/api/config/yaml",
+            content=updated,
+            headers={"Content-Type": "text/plain; charset=utf-8"},
+        )
+
+    assert save_resp.status_code == 200
+    saved = config.read_text(encoding="utf-8")
+    assert "model: saved-model" in saved
+    assert "llm-secret-key" in saved
+    assert "embedding-secret-key" in saved
+
+
 def test_runtime_search_keyword(tmp_path: Path):
     config = _write_runtime_fixture(tmp_path)
     load_runtime_config(config)
