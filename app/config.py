@@ -71,6 +71,7 @@ class SearchConfig(BaseModel):
     default_top_k: int = 10
     filename_exact_bonus: float = 200
     phrase_in_title_bonus: float = 50
+    wiki_fallback_vector_distance_threshold: float = Field(default=0.45, ge=0)
 
 
 class FeedbackModelConfig(BaseModel):

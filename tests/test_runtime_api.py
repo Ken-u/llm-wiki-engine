@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncGenerator
 from pathlib import Path, PureWindowsPath
+from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
 
@@ -71,6 +72,7 @@ search:
   default_top_k: 10
   filename_exact_bonus: 200
   phrase_in_title_bonus: 50
+  wiki_fallback_vector_distance_threshold: 0.45
 runtime:
   mode: auto
   max_tool_calls: 20
@@ -126,6 +128,21 @@ def test_runtime_search_keyword(tmp_path: Path):
         assert data["results"][0]["path"] == "wiki/entities/edla.md"
 
 
+def test_runtime_reindex_rebuilds_knowledge_embeddings(tmp_path: Path):
+    config = _write_runtime_fixture(tmp_path)
+    load_runtime_config(config)
+
+    from app.runtime_main import app
+
+    with patch("app.embedding.service.rebuild_project_embeddings", AsyncMock(return_value={"pages": 3, "chunks": 9})) as rebuild:
+        with TestClient(app) as client:
+            resp = client.post("/api/search/reindex")
+
+    assert resp.status_code == 200
+    assert resp.json() == {"pages": 3, "chunks": 9}
+    assert rebuild.await_args.args[0] == str(tmp_path / "data" / "knowledge")
+
+
 def test_runtime_chat_fast_stream(tmp_path: Path):
     config = _write_runtime_fixture(tmp_path)
     load_runtime_config(config)
@@ -143,6 +160,66 @@ def test_runtime_chat_fast_stream(tmp_path: Path):
         assert "event: token" in body
         assert "EDLA 是本地测试知识" in body
         assert "event: done" in body
+
+
+def test_runtime_wiki_missing_page_falls_back_to_vector_match(monkeypatch, tmp_path: Path):
+    config = _write_runtime_fixture(tmp_path)
+    load_runtime_config(config)
+
+    import app.wiki.resolve as wiki_resolve
+    from app.search.vector import VectorResult
+
+    async def fake_search_vector(*_args, **_kwargs):
+        return [
+            VectorResult(
+                path="wiki/edla.md",
+                page_id="edla",
+                chunk_text="EDLA 是本地测试知识。",
+                heading_path="定义",
+                score=0.2,
+            )
+        ]
+
+    monkeypatch.setattr(wiki_resolve, "search_vector", fake_search_vector)
+
+    from app.runtime_main import app
+
+    with TestClient(app) as client:
+        resp = client.get("/api/wiki/wiki/EDLA%20Alias.md")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["path"] == "wiki/entities/edla.md"
+        assert data["resolved_from"] == "wiki/EDLA Alias.md"
+        assert data["resolution"]["method"] == "vector"
+        assert data["resolution"]["distance"] == 0.2
+        assert "EDLA 是本地测试知识" in data["content"]
+
+
+def test_runtime_wiki_missing_page_rejects_low_similarity_vector_match(monkeypatch, tmp_path: Path):
+    config = _write_runtime_fixture(tmp_path)
+    load_runtime_config(config)
+
+    import app.wiki.resolve as wiki_resolve
+    from app.search.vector import VectorResult
+
+    async def fake_search_vector(*_args, **_kwargs):
+        return [
+            VectorResult(
+                path="wiki/edla.md",
+                page_id="edla",
+                chunk_text="EDLA 是本地测试知识。",
+                heading_path="定义",
+                score=0.9,
+            )
+        ]
+
+    monkeypatch.setattr(wiki_resolve, "search_vector", fake_search_vector)
+
+    from app.runtime_main import app
+
+    with TestClient(app) as client:
+        resp = client.get("/api/wiki/wiki/EDLA%20Alias.md")
+        assert resp.status_code == 404
 
 
 def test_runtime_openai_stream_with_agent(monkeypatch, tmp_path: Path):

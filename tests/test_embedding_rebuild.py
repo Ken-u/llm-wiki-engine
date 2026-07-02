@@ -7,6 +7,16 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pyarrow as pa
+import pytest
+
+from app.config import AppConfig
+
+
+@pytest.fixture(autouse=True)
+def reset_app_config(monkeypatch):
+    import app.config as app_config
+
+    monkeypatch.setattr(app_config, "_config", AppConfig())
 
 
 def test_rebuild_project_embeddings_clears_lancedb_and_embeds_all_wiki_pages(tmp_path):

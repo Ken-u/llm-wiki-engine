@@ -30,3 +30,6 @@ search:
   default_top_k: 10
   filename_exact_bonus: 200
   phrase_in_title_bonus: 50
+  # Used by wiki read APIs when the requested markdown file is missing.
+  # Vector search returns a distance score; lower is more similar.
+  wiki_fallback_vector_distance_threshold: 0.45

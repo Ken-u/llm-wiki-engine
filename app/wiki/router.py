@@ -11,10 +11,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.deps import get_current_user
 from app.auth.models import User
+from app.config import get_config
 from app.database import get_db
 from app.projects.service import check_membership, get_project_or_404
 from app.wiki.frontmatter import parse_frontmatter
 from app.wiki.graph import build_wiki_graph, graph_to_json
+from app.wiki.resolve import resolve_missing_wiki_page
 
 router = APIRouter(prefix="/api/projects/{project_id}/wiki", tags=["wiki"])
 
@@ -69,6 +71,8 @@ class WikiPageResponse(BaseModel):
     path: str
     content: str
     meta: dict
+    resolved_from: str | None = None
+    resolution: dict | None = None
 
 
 @router.get("/overview")
@@ -115,8 +119,24 @@ async def read_wiki_page(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid path")
 
     full_path = Path(project.disk_path) / path
-    if not full_path.exists():
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Page not found")
+    if not full_path.exists() or not full_path.is_file():
+        resolved = await resolve_missing_wiki_page(
+            project.disk_path,
+            path,
+            get_config().search.wiki_fallback_vector_distance_threshold,
+        )
+        if resolved is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Page not found")
+        async with aiofiles.open(resolved.path, "r", encoding="utf-8") as f:
+            content = await f.read()
+        meta, body = parse_frontmatter(content)
+        return WikiPageResponse(
+            path=resolved.path.relative_to(Path(project.disk_path)).as_posix(),
+            content=content,
+            meta=meta.raw,
+            resolved_from=path,
+            resolution=resolved.info,
+        )
 
     async with aiofiles.open(full_path, "r", encoding="utf-8") as f:
         content = await f.read()

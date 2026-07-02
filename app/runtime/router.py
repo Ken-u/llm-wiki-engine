@@ -39,6 +39,7 @@ from app.search.bm25 import search_bm25
 from app.search.fusion import FusedResult, rrf_fusion
 from app.search.vector import search_vector
 from app.wiki.frontmatter import parse_frontmatter
+from app.wiki.resolve import resolve_missing_wiki_page
 
 router = APIRouter(prefix="/api", tags=["runtime"], dependencies=[Depends(require_runtime_api_key)])
 
@@ -47,6 +48,11 @@ class RuntimeSearchRequest(BaseModel):
     query: str = Field(min_length=1)
     top_k: int = Field(default=10, ge=1, le=50)
     mode: Literal["hybrid", "keyword", "vector"] = "hybrid"
+
+
+class RuntimeReindexResponse(BaseModel):
+    pages: int
+    chunks: int
 
 
 class RuntimeCaseSearchRequest(BaseModel):
@@ -160,6 +166,14 @@ async def search_response(body: RuntimeSearchRequest):
     }
 
 
+@router.post("/search/reindex", response_model=RuntimeReindexResponse)
+async def rebuild_vector_index_response():
+    project = get_knowledge_project()
+    from app.embedding.service import rebuild_project_embeddings
+
+    return await rebuild_project_embeddings(project.disk_path)
+
+
 @router.post("/cases/search")
 async def case_search_response(body: RuntimeCaseSearchRequest):
     case_project = get_case_project()
@@ -193,12 +207,29 @@ async def wiki_tree_response():
 
 @router.get("/wiki/{path:path}")
 async def wiki_page_response(path: str):
-    project = get_knowledge_project()
+    settings = get_runtime_config()
+    project = get_knowledge_project(settings)
     full_path = safe_join(project.disk_path, path)
     if full_path is None:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid path")
     if not full_path.exists() or not full_path.is_file():
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Page not found")
+        resolved = await _resolve_missing_wiki_page(
+            project.disk_path,
+            path,
+            settings.search.wiki_fallback_vector_distance_threshold,
+        )
+        if resolved is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Page not found")
+        full_path, resolution = resolved
+        content = await _read_text(full_path)
+        meta, _ = parse_frontmatter(content)
+        return {
+            "path": full_path.relative_to(Path(project.disk_path)).as_posix(),
+            "content": content,
+            "meta": meta.raw,
+            "resolved_from": path,
+            "resolution": resolution,
+        }
     content = await _read_text(full_path)
     meta, _ = parse_frontmatter(content)
     return {"path": path, "content": content, "meta": meta.raw}
@@ -249,6 +280,17 @@ async def chat_response(body: RuntimeChatRequest):
 async def _read_text(path: Path) -> str:
     async with aiofiles.open(path, "r", encoding="utf-8") as f:
         return await f.read()
+
+
+async def _resolve_missing_wiki_page(
+    project_dir: str,
+    requested_path: str,
+    distance_threshold: float,
+) -> tuple[Path, dict] | None:
+    resolved = await resolve_missing_wiki_page(project_dir, requested_path, distance_threshold)
+    if resolved is None:
+        return None
+    return resolved.path, resolved.info
 
 
 async def _chat_sse(body: RuntimeChatRequest) -> AsyncGenerator[str, None]:
