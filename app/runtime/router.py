@@ -11,7 +11,7 @@ from typing import Any, Literal
 
 import aiofiles
 import yaml
-from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from starlette.responses import PlainTextResponse, StreamingResponse
 
@@ -33,6 +33,7 @@ from app.knowledge.fast_lookup import (
     is_definition_query,
 )
 from app.knowledge.lookup import _format_fast_result
+from app.agents.skill_refs import sign_source_ref, verify_source_ref
 from app.runtime.config import get_runtime_config, get_runtime_config_path, load_runtime_config
 from app.runtime.hooks import run_startup_hooks
 from app.runtime.projects import (
@@ -78,6 +79,20 @@ class RuntimeChatRequest(BaseModel):
     mode: Literal["auto", "agent", "fast", "rag"] | None = None
     stream: bool = True
     debug: bool = True
+
+
+class RuntimeSkillChatRequest(BaseModel):
+    message: str = Field(min_length=1)
+
+
+class RuntimeSkillSource(BaseModel):
+    name: str
+    source_ref: str
+
+
+class RuntimeSkillChatResponse(BaseModel):
+    answer: str
+    sources: list[RuntimeSkillSource] = Field(default_factory=list)
 
 
 class RuntimeYamlConfigResponse(BaseModel):
@@ -146,6 +161,71 @@ def _build_system_prompt_config_response(path: Path) -> RuntimeSystemPromptConfi
     )
 
 
+def sign_runtime_source_ref(doc_name: str) -> str:
+    return sign_source_ref(
+        agent_id="runtime",
+        project_id="knowledge",
+        doc_name=doc_name,
+        display_name=doc_name,
+    )
+
+
+def _runtime_source_from_tool_result(tool_result: dict) -> list[RuntimeSkillSource]:
+    name = tool_result.get("name", "")
+    result = tool_result.get("result", {})
+    sources: dict[str, RuntimeSkillSource] = {}
+
+    def add(doc_name: str) -> None:
+        if not doc_name or doc_name in sources:
+            return
+        project = get_knowledge_project(get_runtime_config())
+        full_path = safe_join(project.disk_path, f"raw/sources/{doc_name}")
+        if full_path is None or not full_path.is_file():
+            return
+        sources[doc_name] = RuntimeSkillSource(
+            name=doc_name,
+            source_ref=sign_runtime_source_ref(doc_name),
+        )
+
+    if name == "read_raw" and isinstance(result, dict):
+        add(str(result.get("path") or ""))
+    if name == "grep_raw" and isinstance(result, dict):
+        for match in result.get("matches") or []:
+            if isinstance(match, dict):
+                add(str(match.get("file") or ""))
+    return list(sources.values())
+
+
+def _build_runtime_skill_markdown(base_url: str) -> str:
+    settings = get_runtime_config()
+    chat_url = f"{base_url}/api/skill/chat"
+    source_url = f"{base_url}/api/skill/documents/content?ref=<source_ref>"
+    auth_line = (
+        f"\nAuthorization: Bearer {settings.server.api_key}\n"
+        if settings.server.api_key
+        else "\nNo Authorization header is required for this Runtime.\n"
+    )
+    return f"""---
+name: runtime-knowledge
+description: Use when the user asks to query or verify information against the {settings.knowledge.name} Runtime knowledge base.
+---
+
+# {settings.knowledge.name} Runtime Knowledge
+
+When the user asks to use this knowledge base, call the Runtime Skill chat endpoint before answering.
+
+Do not answer from memory for in-scope questions.
+
+Use:
+
+- POST {chat_url}
+- GET {source_url}
+{auth_line}
+Only read source documents through `source_ref` values returned by chat. Do not guess filenames or paths. Do not list raw documents.
+If the knowledge base does not contain an answer, say so clearly.
+"""
+
+
 @router.get("/status")
 async def status_response():
     return await build_status(get_runtime_config())
@@ -187,6 +267,46 @@ async def update_yaml_config_response(content: str = Body(media_type="text/plain
 @router.get("/config/system-prompt", response_model=RuntimeSystemPromptConfigResponse)
 async def get_system_prompt_config_response():
     return _build_system_prompt_config_response(_runtime_config_path_or_500())
+
+
+@router.get("/skill")
+async def runtime_skill_download(request: Request):
+    return PlainTextResponse(
+        _build_runtime_skill_markdown(str(request.base_url).rstrip("/")),
+        media_type="text/markdown",
+    )
+
+
+@router.post("/skill/chat", response_model=RuntimeSkillChatResponse)
+async def runtime_skill_chat(body: RuntimeSkillChatRequest):
+    runtime_body = RuntimeChatRequest(message=body.message, stream=False)
+    answer_parts: list[str] = []
+    sources_by_name: dict[str, RuntimeSkillSource] = {}
+
+    async for event in _chat_events(runtime_body):
+        if event["event"] == "token":
+            answer_parts.append(event["data"].get("text", ""))
+        elif event["event"] == "tool_result":
+            for source in _runtime_source_from_tool_result(event["data"]):
+                sources_by_name.setdefault(source.name, source)
+
+    return RuntimeSkillChatResponse(
+        answer="".join(answer_parts),
+        sources=list(sources_by_name.values()),
+    )
+
+
+@router.get("/skill/documents/content")
+async def runtime_skill_document_content(ref: str):
+    payload = verify_source_ref(ref)
+    if payload is None or payload.agent_id != "runtime" or payload.project_id != "knowledge":
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Source not found")
+
+    project = get_knowledge_project(get_runtime_config())
+    full_path = safe_join(project.disk_path, f"raw/sources/{payload.doc_name}")
+    if full_path is None or not full_path.is_file():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Source not found")
+    return PlainTextResponse(await _read_text(full_path))
 
 
 @router.put("/config/system-prompt", response_model=RuntimeSystemPromptConfigResponse)
