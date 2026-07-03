@@ -24,6 +24,7 @@ import aiofiles
 
 from app.documents.parser import parse_document
 from app.ingest.cache import check_cache, update_cache
+from app.ingest.files import source_identity
 from app.ingest.knowledge_tool import collect_with_main_knowledge_tools, get_case_library_main_projects
 from app.ingest.parser import parse_file_blocks
 from app.ingest.prompts import build_analysis_prompt, build_generation_prompt
@@ -144,7 +145,8 @@ async def auto_ingest(
     cb = ProgressCallback(on_progress, on_step)
     base = Path(project_dir)
     src = Path(source_path)
-    source_identity = src.name
+    raw_source_root = base / "raw" / "sources"
+    source_identity_value = source_identity(str(src), str(raw_source_root))
 
     # ── Parse document ──
     await _ensure_not_paused(should_pause)
@@ -155,8 +157,8 @@ async def auto_ingest(
         return []
 
     # ── Cache check ──
-    if await check_cache(project_dir, source_identity, content):
-        logger.info("Cache hit for %s, skipping ingest", source_identity)
+    if await check_cache(project_dir, source_identity_value, content):
+        logger.info("Cache hit for %s, skipping ingest", source_identity_value)
         await _remove_checkpoint(project_dir, source_path)
         return []
 
@@ -183,34 +185,34 @@ async def auto_ingest(
         await cb.report("Step 1/2: Analyzing source document...")
         analysis = await collect_with_main_knowledge_tools(
             build_analysis_prompt(purpose, index, truncated),
-            f"Analyze this source document:\n\n**File:** {source_identity}\n\n---\n\n{truncated}",
+            f"Analyze this source document:\n\n**File:** {source_identity_value}\n\n---\n\n{truncated}",
             main_knowledge_projects,
             temperature=0.1,
             max_tokens=4096,
         )
         if not analysis.strip():
-            raise RuntimeError(f"Analysis returned empty for {source_identity}")
+            raise RuntimeError(f"Analysis returned empty for {source_identity_value}")
 
         await _save_checkpoint(project_dir, source_path, 1, {"analysis": analysis})
         await cb.set_step(1)
-        logger.info("Step 1 complete for %s, checkpoint saved", source_identity)
+        logger.info("Step 1 complete for %s, checkpoint saved", source_identity_value)
     else:
         analysis = checkpoint.get("analysis", "") if checkpoint else ""
         if not analysis:
-            raise RuntimeError(f"Checkpoint missing analysis for {source_identity}, re-run from scratch")
+            raise RuntimeError(f"Checkpoint missing analysis for {source_identity_value}, re-run from scratch")
         await cb.report("Step 1/2: Resuming from checkpoint (analysis cached)")
-        logger.info("Resuming %s from step %d (analysis from checkpoint)", source_identity, effective_step)
+        logger.info("Resuming %s from step %d (analysis from checkpoint)", source_identity_value, effective_step)
 
     # ── Step 2: Generation ──
     if effective_step < 2:
         await _ensure_not_paused(should_pause)
         await cb.report("Step 2/2: Generating wiki pages...")
 
-        source_base = source_identity.rsplit(".", 1)[0] if "." in source_identity else source_identity
+        source_base = source_identity_value.rsplit(".", 1)[0] if "." in source_identity_value else source_identity_value
         summary_path = f"wiki/sources/{source_base}.md"
 
         user_msg = "\n".join([
-            f"Source document to process: **{source_identity}**",
+            f"Source document to process: **{source_identity_value}**",
             "",
             "The Stage 1 analysis below is CONTEXT to inform your output. Do NOT echo",
             "its tables, bullet points, or prose. Your output must be FILE/REVIEW",
@@ -226,30 +228,30 @@ async def auto_ingest(
             "",
             "---",
             "",
-            f"Now emit the FILE blocks for the wiki files derived from **{source_identity}**.",
+            f"Now emit the FILE blocks for the wiki files derived from **{source_identity_value}**.",
             "Your response MUST begin with `---FILE:` as the very first characters.",
             "No preamble. No analysis prose. Start immediately.",
         ])
 
         generation = await collect_with_main_knowledge_tools(
-            build_generation_prompt(schema, purpose, index, source_identity, overview, truncated, summary_path),
+            build_generation_prompt(schema, purpose, index, source_identity_value, overview, truncated, summary_path),
             user_msg,
             main_knowledge_projects,
             temperature=0.1,
             max_tokens=8192,
         )
         if not generation.strip():
-            raise RuntimeError(f"Generation returned empty for {source_identity}")
+            raise RuntimeError(f"Generation returned empty for {source_identity_value}")
 
         await _save_checkpoint(project_dir, source_path, 2, {"analysis": analysis, "generation": generation})
         await cb.set_step(2)
-        logger.info("Step 2 complete for %s, checkpoint saved", source_identity)
+        logger.info("Step 2 complete for %s, checkpoint saved", source_identity_value)
     else:
         generation = checkpoint.get("generation", "") if checkpoint else ""
         if not generation:
-            raise RuntimeError(f"Checkpoint missing generation for {source_identity}, re-run from scratch")
+            raise RuntimeError(f"Checkpoint missing generation for {source_identity_value}, re-run from scratch")
         await cb.report("Step 2/2: Resuming from checkpoint (generation cached)")
-        logger.info("Resuming %s from step %d (generation from checkpoint)", source_identity, effective_step)
+        logger.info("Resuming %s from step %d (generation from checkpoint)", source_identity_value, effective_step)
 
     # ── Parse + Write ──
     await _ensure_not_paused(should_pause)
@@ -258,14 +260,14 @@ async def auto_ingest(
         logger.warning("Parse warning: %s", w)
 
     if not result.blocks:
-        logger.warning("No FILE blocks parsed from generation for %s", source_identity)
+        logger.warning("No FILE blocks parsed from generation for %s", source_identity_value)
         await _remove_checkpoint(project_dir, source_path)
         return []
 
     await cb.report(f"Writing {len(result.blocks)} files...")
     target_snapshot = await _snapshot_targets(project_dir, [block.path for block in result.blocks])
     try:
-        written = await write_file_blocks(project_dir, result.blocks, source_identity)
+        written = await write_file_blocks(project_dir, result.blocks, source_identity_value)
         await cb.set_step(3)
 
         # ── Embedding ──
@@ -275,14 +277,14 @@ async def auto_ingest(
             await cb.report("Embedding wiki pages...")
             await embed_pages(project_dir, written)
         except Exception:
-            logger.exception("Embedding failed for %s (non-fatal)", source_identity)
+            logger.exception("Embedding failed for %s (non-fatal)", source_identity_value)
 
         # ── Finalize ──
-        await update_cache(project_dir, source_identity, content, written)
+        await update_cache(project_dir, source_identity_value, content, written)
         await _remove_checkpoint(project_dir, source_path)
     except Exception:
         await _restore_targets(project_dir, target_snapshot)
         raise
 
-    logger.info("Ingest complete for %s: %d files written", source_identity, len(written))
+    logger.info("Ingest complete for %s: %d files written", source_identity_value, len(written))
     return written

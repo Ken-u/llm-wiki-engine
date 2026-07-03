@@ -6,6 +6,7 @@ services:
     volumes:
       - ./projects:/data/projects
       - ./config.yaml:/app/config.yaml:ro
+      - ${HOME}/.ssh:/host-ssh:ro
     environment:
       - LLM_API_KEY=${LLM_API_KEY:-}
       - EMBEDDING_API_KEY=${EMBEDDING_API_KEY:-}

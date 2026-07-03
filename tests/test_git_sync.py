@@ -43,6 +43,7 @@ if "apscheduler" not in sys.modules:
 
 from app.projects import git_sync
 from app.projects.git_sync import _commit_and_publish, _ensure_repo, _inject_auth
+from app.ingest.files import provider_source_root
 
 
 def test_inject_auth_with_token():
@@ -106,7 +107,7 @@ def test_ensure_repo_empty_remote_creates_target_branch(tmp_path):
 
     _ensure_repo(project)
 
-    head = (Path(project.disk_path) / ".git" / "HEAD").read_text(encoding="utf-8").strip()
+    head = (provider_source_root(project.disk_path) / ".git" / "HEAD").read_text(encoding="utf-8").strip()
     assert head == "ref: refs/heads/main"
 
 
@@ -137,7 +138,7 @@ def test_ensure_repo_remote_default_branch_differs_from_target_branch(tmp_path):
 
     _ensure_repo(project)
 
-    head = (Path(project.disk_path) / ".git" / "HEAD").read_text(encoding="utf-8").strip()
+    head = (provider_source_root(project.disk_path) / ".git" / "HEAD").read_text(encoding="utf-8").strip()
     assert head == "ref: refs/heads/main"
 
 
@@ -191,6 +192,14 @@ def test_commit_and_publish_uses_separate_remote_without_changing_origin(tmp_pat
     subprocess.run(["git", "init", str(worktree)], check=True, capture_output=True, text=True)
     subprocess.run(["git", "-C", str(worktree), "remote", "add", "origin", str(source_remote)], check=True, capture_output=True, text=True)
     (worktree / "README.md").write_text("hello\n", encoding="utf-8")
+    (worktree / ".llm-wiki" / "source-repo").mkdir(parents=True)
+    (worktree / ".llm-wiki" / "source-repo" / "provider.md").write_text("provider\n", encoding="utf-8")
+    (worktree / ".llm-wiki" / "chats").mkdir(parents=True)
+    (worktree / ".llm-wiki" / "chats" / "chat.json").write_text("{}", encoding="utf-8")
+    (worktree / ".llm-wiki" / "checkpoints").mkdir(parents=True)
+    (worktree / ".llm-wiki" / "checkpoints" / "job.json").write_text("{}", encoding="utf-8")
+    (worktree / ".llm-wiki").mkdir(exist_ok=True)
+    (worktree / ".llm-wiki" / "source-map.json").write_text("{}", encoding="utf-8")
     subprocess.run(["git", "-C", str(worktree), "add", "README.md"], check=True, capture_output=True, text=True)
     subprocess.run(
         ["git", "-C", str(worktree), "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "init"],
@@ -225,5 +234,26 @@ def test_commit_and_publish_uses_separate_remote_without_changing_origin(tmp_pat
         capture_output=True,
         text=True,
     ).stdout.strip()
+    published_files = subprocess.run(
+        ["git", "--git-dir", str(publish_remote), "ls-tree", "-r", "--name-only", "main"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
     assert origin_url == str(source_remote)
     assert publish_refs
+    assert "README.md" in published_files
+    assert ".gitignore" in published_files
+    assert ".llm-wiki/source-map.json" in published_files
+    assert ".llm-wiki/source-repo/provider.md" not in published_files
+    assert ".llm-wiki/chats/chat.json" not in published_files
+    assert ".llm-wiki/checkpoints/job.json" not in published_files
+    published_gitignore = subprocess.run(
+        ["git", "--git-dir", str(publish_remote), "show", "main:.gitignore"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert ".llm-wiki/source-repo/" in published_gitignore
+    assert ".llm-wiki/chats/" in published_gitignore
+    assert ".llm-wiki/checkpoints/" in published_gitignore

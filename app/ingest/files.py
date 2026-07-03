@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+import shutil
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Literal
@@ -21,6 +24,13 @@ _STATUS_PRIORITY: dict[IngestFileStatus, int] = {
 }
 
 _ACTIVE_JOB_STATUSES = {"processing", "pending", "paused"}
+_EXCLUDED_REPO_SOURCE_DIRS = {
+    ".git",
+    ".llm-wiki",
+    "__pycache__",
+    "node_modules",
+    "wiki",
+}
 
 
 @dataclass
@@ -63,7 +73,113 @@ def source_identity(path: str, source_root: str | None = None) -> str:
             return source_path.resolve().relative_to(Path(source_root).resolve()).as_posix()
         except ValueError:
             pass
+    parts = source_path.parts
+    for idx in range(len(parts) - 1):
+        if parts[idx] == "raw" and parts[idx + 1] == "sources":
+            return Path(*parts[idx + 2:]).as_posix()
     return source_path.name
+
+
+def provider_source_root(project_dir: str) -> Path:
+    return Path(project_dir) / ".llm-wiki" / "source-repo"
+
+
+def preferred_source_root(project_dir: str) -> Path:
+    """Return provider checkout when populated, then raw/sources, then project root.
+
+    Older projects store compile inputs under raw/sources. Git-synced
+    repositories are cloned under .llm-wiki/source-repo and should be the file
+    tree users select from before selected files are copied into raw/sources.
+    """
+    project_root = Path(project_dir)
+    provider_root = provider_source_root(project_dir)
+    if provider_root.exists() and any(
+        path.is_file() and not path.name.startswith(".")
+        for path in provider_root.rglob("*")
+    ):
+        return provider_root
+    raw_sources = project_root / "raw" / "sources"
+    if raw_sources.exists() and any(
+        path.is_file() and not path.name.startswith(".")
+        for path in raw_sources.rglob("*")
+    ):
+        return raw_sources
+    return project_root
+
+
+def is_project_source_file(path: Path, source_root: Path) -> bool:
+    if not path.is_file() or path.name.startswith("."):
+        return False
+    try:
+        rel = path.resolve().relative_to(source_root.resolve())
+    except ValueError:
+        return False
+    return not any(part in _EXCLUDED_REPO_SOURCE_DIRS for part in rel.parts)
+
+
+def list_project_source_files(project_dir: str) -> tuple[Path, list[Path]]:
+    source_root = preferred_source_root(project_dir)
+    if not source_root.exists():
+        return source_root, []
+    files = [
+        path for path in source_root.rglob("*")
+        if is_project_source_file(path, source_root)
+    ]
+    return source_root, sorted(
+        files,
+        key=lambda path: path.resolve().relative_to(source_root.resolve()).as_posix().lower(),
+    )
+
+
+def _file_sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _source_map_path(project_dir: str) -> Path:
+    return Path(project_dir) / ".llm-wiki" / "source-map.json"
+
+
+def load_source_map(project_dir: str) -> dict[str, dict[str, str]]:
+    path = _source_map_path(project_dir)
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def save_source_map(project_dir: str, source_map: dict[str, dict[str, str]]) -> None:
+    path = _source_map_path(project_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(source_map, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def stage_source_for_ingest(project_dir: str, source_path: str, source_root: str) -> Path:
+    """Copy a selected provider file into raw/sources and record its origin."""
+    src = Path(source_path)
+    root = Path(source_root)
+    rel = src.resolve().relative_to(root.resolve()).as_posix()
+    raw_root = Path(project_dir) / "raw" / "sources"
+    dest = raw_root / rel
+    if src.resolve() == dest.resolve():
+        return dest
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, dest)
+    source_map = load_source_map(project_dir)
+    source_map[rel] = {
+        "source_path": rel,
+        "raw_source_path": f"raw/sources/{rel}",
+        "sha256": _file_sha256(src),
+        "copied_at": datetime.now(timezone.utc).isoformat(),
+    }
+    save_source_map(project_dir, source_map)
+    return dest
 
 
 def validate_source_pattern(pattern: str) -> str:

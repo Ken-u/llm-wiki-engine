@@ -117,6 +117,7 @@ async def _ensure_system_settings_table(conn) -> None:
 async def _auto_migrate(conn) -> None:
     """Add missing columns to existing tables (lightweight SQLite migration)."""
     import logging
+    import sqlalchemy
     logger = logging.getLogger(__name__)
 
     migrations = [
@@ -160,10 +161,62 @@ async def _auto_migrate(conn) -> None:
     for table, column, col_type in migrations:
         try:
             await conn.execute(
-                __import__("sqlalchemy").text(
+                sqlalchemy.text(
                     f"ALTER TABLE {table} ADD COLUMN {column} {col_type}"
                 )
             )
             logger.info("Migrated: added %s.%s", table, column)
         except Exception:
             pass  # column already exists
+
+    await _ensure_system_settings_table(conn)
+    await _migrate_legacy_git_config_to_publish(conn)
+
+
+async def _migrate_legacy_git_config_to_publish(conn) -> None:
+    """Treat pre-source-repo Git config as publish-repo config.
+
+    Before source repositories existed, project.git_* described the LLM Wiki
+    project repository itself. After the split, those values belong to
+    publish_* and source Git config should start blank.
+    """
+    import logging
+    import sqlalchemy
+    logger = logging.getLogger(__name__)
+    marker = "migration:legacy_git_to_publish"
+    existing = (
+        await conn.execute(
+            sqlalchemy.text("SELECT data FROM system_settings WHERE section = :section"),
+            {"section": marker},
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        return
+
+    result = await conn.execute(
+        sqlalchemy.text("""
+            UPDATE projects
+            SET
+                publish_repo_url = git_repo_url,
+                publish_branch = COALESCE(NULLIF(git_branch, ''), 'main'),
+                publish_username = git_username,
+                publish_auth_token = git_auth_token,
+                publish_author_name = git_author_name,
+                publish_author_email = git_author_email,
+                publish_enabled = git_sync_enabled,
+                git_repo_url = '',
+                git_username = '',
+                git_auth_token = '',
+                git_sync_enabled = 0,
+                git_sync_auto_compile = 0,
+                last_git_sync_status = 'idle',
+                last_git_sync_error = ''
+            WHERE COALESCE(git_repo_url, '') != ''
+              AND COALESCE(publish_repo_url, '') = ''
+        """)
+    )
+    await conn.execute(
+        sqlalchemy.text("INSERT INTO system_settings(section, data) VALUES (:section, :data)"),
+        {"section": marker, "data": "{}"},
+    )
+    logger.info("Migrated legacy Git config to publish config for %d projects", result.rowcount or 0)

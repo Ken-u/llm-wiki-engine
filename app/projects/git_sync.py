@@ -15,6 +15,7 @@ from sqlalchemy import select, update
 from app.database import async_session
 from app.documents.parser import parse_document
 from app.ingest.cache import check_cache
+from app.ingest.files import list_project_source_files, provider_source_root
 from app.ingest.models import IngestJob
 from app.ingest.queue import ingest_queue
 from app.projects.models import Project
@@ -106,7 +107,7 @@ def _ensure_branch_checkout(root: Path, branch: str) -> None:
 
 def _ensure_repo(project: Project) -> None:
     """Clone or update the git working copy at project.disk_path."""
-    root = Path(project.disk_path)
+    root = provider_source_root(project.disk_path)
     authed_url = _inject_auth(project.git_repo_url, project.git_auth_token, username=project.git_username)
     branch = project.git_branch or "main"
 
@@ -122,7 +123,7 @@ def _ensure_repo(project: Project) -> None:
             root.mkdir(parents=True, exist_ok=True)
             _run_git(["clone", authed_url, str(root)])
         _ensure_branch_checkout(root, branch)
-        logger.info("Cloned %s (%s) -> %s", project.git_repo_url, branch, project.disk_path)
+        logger.info("Cloned provider %s (%s) -> %s", project.git_repo_url, branch, root)
     else:
         _run_git(["remote", "set-url", "origin", authed_url], cwd=str(root))
         fetch_result = _run_git(["fetch", "origin", branch], cwd=str(root), check=False)
@@ -134,7 +135,7 @@ def _ensure_repo(project: Project) -> None:
         else:
             _ensure_branch_checkout(root, branch)
         _ensure_branch_checkout(root, branch)
-        logger.info("Updated %s to origin/%s", project.disk_path, branch)
+        logger.info("Updated provider %s to origin/%s", root, branch)
 
 
 def _commit_and_push(project: Project) -> bool:
@@ -144,7 +145,7 @@ def _commit_and_push(project: Project) -> bool:
 
     _run_git(["add", "-A"], cwd=root)
 
-    status = _run_git(["status", "--porcelain"], cwd=root)
+    status = _run_git(["status", "--porcelain", "--", ".", ":!.llm-wiki/source-repo"], cwd=root)
     if not status.stdout.strip():
         logger.info("No changes to commit for project %s", project.id)
         return False
@@ -168,6 +169,36 @@ def _publish_remote_name() -> str:
     return "llmwiki-publish"
 
 
+_PUBLISH_GITIGNORE_LINES = [
+    ".llm-wiki/source-repo/",
+    ".llm-wiki/chats/",
+    ".llm-wiki/checkpoints/",
+]
+
+_PUBLISH_IGNORED_PATHS = [
+    ".llm-wiki/source-repo",
+    ".llm-wiki/chats",
+    ".llm-wiki/checkpoints",
+]
+
+
+def _ensure_publish_gitignore(root: Path) -> None:
+    """Keep runtime-only project data out of the publish repository."""
+    gitignore = root / ".gitignore"
+    existing = gitignore.read_text(encoding="utf-8").splitlines() if gitignore.exists() else []
+    existing_rules = {line.strip() for line in existing}
+    missing = [line for line in _PUBLISH_GITIGNORE_LINES if line not in existing_rules]
+    if not missing:
+        return
+
+    next_lines = list(existing)
+    if next_lines and next_lines[-1].strip():
+        next_lines.append("")
+    next_lines.append("# llm-wiki runtime data")
+    next_lines.extend(missing)
+    gitignore.write_text("\n".join(next_lines) + "\n", encoding="utf-8")
+
+
 def _commit_and_publish(project: Project) -> bool:
     """Commit current worktree and push it to a separate publish remote."""
     publish_url = getattr(project, "publish_repo_url", "") or ""
@@ -181,6 +212,12 @@ def _commit_and_publish(project: Project) -> bool:
     branch = getattr(project, "publish_branch", "") or "main"
     remote = _publish_remote_name()
 
+    if not (Path(root) / ".git").exists():
+        _run_git(["init"], cwd=root)
+        _run_git(["checkout", "-B", branch], cwd=root)
+
+    _ensure_publish_gitignore(Path(root))
+    _run_git(["rm", "-r", "--cached", "--ignore-unmatch", "--", *_PUBLISH_IGNORED_PATHS], cwd=root)
     _run_git(["add", "-A"], cwd=root)
     status = _run_git(["status", "--porcelain"], cwd=root)
     if status.stdout.strip():
@@ -344,18 +381,12 @@ async def sync_project_from_git(
             # Pull
             await loop.run_in_executor(None, lambda: _ensure_repo(project))
 
-            # Enumerate raw sources
-            raw_dir = Path(project.disk_path) / "raw" / "sources"
-            if not raw_dir.exists():
-                raw_dir.mkdir(parents=True, exist_ok=True)
-
-            source_files = [
-                f for f in raw_dir.rglob("*")
-                if f.is_file() and not f.name.startswith(".")
-            ]
+            # Enumerate source files. Prefer populated raw/sources for legacy
+            # projects, otherwise treat the synced repository as the source tree.
+            source_root, source_files = list_project_source_files(project.disk_path)
 
             if not source_files:
-                logger.info("No raw source files found for project %s", project_id)
+                logger.info("No source files found for project %s", project_id)
 
             # Pre-filter: only enqueue files whose content actually changed
             changed_files = []
@@ -364,7 +395,7 @@ async def sync_project_from_git(
                     content = parse_document(src_file)
                     if not content.strip():
                         continue
-                    source_identity = src_file.resolve().relative_to(raw_dir.resolve()).as_posix()
+                    source_identity = src_file.resolve().relative_to(source_root.resolve()).as_posix()
                     if not await check_cache(project.disk_path, source_identity, content):
                         changed_files.append(src_file)
                 except Exception:
@@ -407,9 +438,6 @@ async def sync_project_from_git(
             failed_jobs = await _get_failed_jobs(job_ids)
             if failed_jobs:
                 raise RuntimeError(f"{len(failed_jobs)} 个编译任务失败")
-
-            # Commit and push
-            await loop.run_in_executor(None, lambda: _commit_and_push(project))
 
             # Mark success
             async with async_session() as db:

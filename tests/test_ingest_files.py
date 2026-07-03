@@ -8,9 +8,13 @@ from app.ingest.files import (
     IngestSelection,
     apply_selection,
     filter_and_sort_items,
+    list_project_source_files,
+    load_source_map,
     paginate_items,
+    provider_source_root,
     resolve_file_statuses,
     source_identity,
+    stage_source_for_ingest,
 )
 
 
@@ -223,3 +227,67 @@ def test_source_identity_returns_relative_path_for_nested_source_root():
         "/project/raw/sources/a/guide.md",
         "/project/raw/sources",
     ) == "a/guide.md"
+
+
+def test_list_project_source_files_uses_repo_root_when_raw_sources_empty(tmp_path):
+    project = tmp_path / "project"
+    (project / "docs" / "nested").mkdir(parents=True)
+    (project / "raw" / "sources").mkdir(parents=True)
+    (project / ".git").mkdir()
+    (project / "wiki").mkdir()
+    (project / "docs" / "nested" / "guide.md").write_text("guide", encoding="utf-8")
+    (project / "README.md").write_text("readme", encoding="utf-8")
+    (project / ".git" / "config").write_text("git", encoding="utf-8")
+    (project / "wiki" / "index.md").write_text("generated", encoding="utf-8")
+
+    source_root, files = list_project_source_files(str(project))
+
+    assert source_root == project
+    assert [path.relative_to(source_root).as_posix() for path in files] == [
+        "docs/nested/guide.md",
+        "README.md",
+    ]
+
+
+def test_list_project_source_files_prefers_populated_raw_sources(tmp_path):
+    project = tmp_path / "project"
+    (project / "docs").mkdir(parents=True)
+    (project / "raw" / "sources" / "a").mkdir(parents=True)
+    (project / "docs" / "outside.md").write_text("outside", encoding="utf-8")
+    (project / "raw" / "sources" / "a" / "guide.md").write_text("guide", encoding="utf-8")
+
+    source_root, files = list_project_source_files(str(project))
+
+    assert source_root == project / "raw" / "sources"
+    assert [path.relative_to(source_root).as_posix() for path in files] == ["a/guide.md"]
+
+
+def test_list_project_source_files_prefers_provider_checkout(tmp_path):
+    project = tmp_path / "project"
+    provider = provider_source_root(str(project))
+    (provider / "docs").mkdir(parents=True)
+    (project / "raw" / "sources").mkdir(parents=True)
+    (provider / "docs" / "guide.md").write_text("guide", encoding="utf-8")
+    (project / "raw" / "sources" / "old.md").write_text("old", encoding="utf-8")
+
+    source_root, files = list_project_source_files(str(project))
+
+    assert source_root == provider
+    assert [path.relative_to(source_root).as_posix() for path in files] == ["docs/guide.md"]
+
+
+def test_stage_source_for_ingest_copies_selected_provider_file_and_records_map(tmp_path):
+    project = tmp_path / "project"
+    provider = provider_source_root(str(project))
+    source = provider / "docs" / "guide.md"
+    source.parent.mkdir(parents=True)
+    source.write_text("guide", encoding="utf-8")
+
+    staged = stage_source_for_ingest(str(project), str(source), str(provider))
+
+    assert staged == project / "raw" / "sources" / "docs" / "guide.md"
+    assert staged.read_text(encoding="utf-8") == "guide"
+    source_map = load_source_map(str(project))
+    assert source_map["docs/guide.md"]["source_path"] == "docs/guide.md"
+    assert source_map["docs/guide.md"]["raw_source_path"] == "raw/sources/docs/guide.md"
+    assert source_map["docs/guide.md"]["sha256"]

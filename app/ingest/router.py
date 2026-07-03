@@ -22,8 +22,12 @@ from app.ingest.files import (
     SortDirection,
     apply_selection,
     filter_and_sort_items,
+    is_project_source_file,
+    list_project_source_files,
     paginate_items,
+    preferred_source_root,
     resolve_file_statuses,
+    stage_source_for_ingest,
 )
 from app.ingest.models import IngestJob
 from app.ingest.queue import ingest_queue
@@ -108,23 +112,8 @@ class IngestFilePreviewResponse(BaseModel):
     truncated: bool
 
 
-def _source_dir(project_dir: str) -> Path:
-    return Path(project_dir) / "raw" / "sources"
-
-
-def _list_source_files(project_dir: str) -> list[Path]:
-    source_dir = _source_dir(project_dir)
-    if not source_dir.exists():
-        return []
-    return [
-        path for path in source_dir.rglob("*")
-        if path.is_file() and not path.name.startswith(".")
-    ]
-
-
 async def _build_file_items(project, db: AsyncSession) -> list:
-    sources = _list_source_files(project.disk_path)
-    source_dir = _source_dir(project.disk_path)
+    source_dir, sources = list_project_source_files(project.disk_path)
     cache = await load_cache(project.disk_path)
     cached_identities = set(cache.keys())
     changed_identities: set[str] = set()
@@ -161,7 +150,7 @@ async def _build_file_items(project, db: AsyncSession) -> list:
 
 
 def _resolve_requested_sources(project_dir: str, source_files: list[str]) -> list[Path]:
-    source_dir = _source_dir(project_dir)
+    source_dir = preferred_source_root(project_dir)
     resolved: list[Path] = []
     for source_file in source_files:
         src = (source_dir / source_file).resolve()
@@ -171,6 +160,8 @@ def _resolve_requested_sources(project_dir: str, source_files: list[str]) -> lis
             raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Invalid source file: {source_file}") from None
         if not src.exists() or not src.is_file():
             raise HTTPException(status.HTTP_404_NOT_FOUND, f"Source file not found: {source_file}")
+        if not is_project_source_file(src, source_dir):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Invalid source file: {source_file}")
         resolved.append(src)
     return resolved
 
@@ -190,21 +181,22 @@ async def trigger_ingest(
             "Wiki compilation is not available for case_library projects. Use case index rebuild instead.",
         )
 
-    source_dir = Path(project.disk_path) / "raw" / "sources"
+    source_dir = preferred_source_root(project.disk_path)
     requested_files = body.source_files or ([body.source_file] if body.source_file else None)
     if requested_files:
         sources = _resolve_requested_sources(project.disk_path, requested_files)
     else:
         if not source_dir.exists():
             raise HTTPException(status.HTTP_404_NOT_FOUND, "No sources directory")
-        sources = _list_source_files(project.disk_path)
+        _, sources = list_project_source_files(project.disk_path)
 
     if not sources:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "No source files found")
 
     job_ids = []
     for src in sources:
-        jid = await ingest_queue.enqueue(project_id, project.disk_path, str(src), user.id)
+        staged = stage_source_for_ingest(project.disk_path, str(src), str(source_dir))
+        jid = await ingest_queue.enqueue(project_id, project.disk_path, str(staged), user.id)
         job_ids.append(jid)
 
     return {"jobs": job_ids, "count": len(job_ids)}
@@ -313,13 +305,15 @@ async def enqueue_ingest_files(
         selected = [by_name[source_file] for source_file in body.source_files]
 
     eligible = [item for item in selected if item.status in ("failed", "updated", "not_queued")]
+    source_dir = preferred_source_root(project.disk_path)
     job_ids = []
     for item in eligible:
+        staged = stage_source_for_ingest(project.disk_path, item.source_path, str(source_dir))
         job_ids.append(
             await ingest_queue.enqueue(
                 project_id,
                 project.disk_path,
-                item.source_path,
+                str(staged),
                 user.id,
             )
         )
