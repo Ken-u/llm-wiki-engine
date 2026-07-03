@@ -17,9 +17,11 @@ from app.ingest.files import (
     local_source_root,
     paginate_items,
     provider_source_root,
+    resolve_browser_source_files,
     resolve_file_statuses,
     source_identity,
     stage_source_for_ingest,
+    stage_sources_for_ingest,
 )
 
 
@@ -401,3 +403,39 @@ def test_build_ingest_record_page_compiled_tab_uses_cache_not_provider_tree(tmp_
 
     assert [item.source_file for item in page.items] == ["done.md"]
     assert page.counts["compiled"] == 1
+
+
+def test_stage_sources_for_ingest_writes_source_map_once(tmp_path):
+    project = tmp_path / "project"
+    provider = provider_source_root(str(project))
+    first = provider / "docs" / "a.md"
+    second = provider / "docs" / "b.md"
+    first.parent.mkdir(parents=True)
+    first.write_text("a", encoding="utf-8")
+    second.write_text("b", encoding="utf-8")
+
+    staged = stage_sources_for_ingest(
+        str(project),
+        [(str(first), str(provider)), (str(second), str(provider))],
+    )
+
+    assert [path.relative_to(project).as_posix() for path in staged] == [
+        "raw/sources/docs/a.md",
+        "raw/sources/docs/b.md",
+    ]
+    source_map = load_source_map(str(project))
+    assert set(source_map) == {"docs/a.md", "docs/b.md"}
+
+
+def test_resolve_browser_source_files_skips_tree_scan(tmp_path):
+    project = tmp_path / "project"
+    provider = provider_source_root(str(project))
+    selected = provider / "picked.md"
+    ignored = provider / "ignored.md"
+    selected.parent.mkdir(parents=True)
+    selected.write_text("picked", encoding="utf-8")
+    ignored.write_text("ignored", encoding="utf-8")
+
+    resolved = resolve_browser_source_files(provider, ["picked.md"])
+
+    assert [path.name for path in resolved] == ["picked.md"]

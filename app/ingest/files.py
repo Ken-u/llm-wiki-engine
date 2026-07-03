@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from fnmatch import fnmatchcase
 from pathlib import Path
-from typing import Literal
+from typing import Callable, Literal
 
 from app.documents.parser import parse_document
 from app.ingest.cache import content_hash
@@ -207,27 +207,65 @@ def save_source_map(project_dir: str, source_map: dict[str, dict[str, str]]) -> 
     path.write_text(json.dumps(source_map, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def stage_sources_for_ingest(
+    project_dir: str,
+    pairs: list[tuple[str, str]],
+    *,
+    on_item: Callable[[int, int, str], None] | None = None,
+) -> list[Path]:
+    """Copy selected files into raw/sources, persisting source-map once."""
+    if not pairs:
+        return []
+    source_map = load_source_map(project_dir)
+    raw_root = Path(project_dir) / "raw" / "sources"
+    results: list[Path] = []
+    dirty = False
+    total = len(pairs)
+    for index, (source_path, source_root) in enumerate(pairs, start=1):
+        src = Path(source_path)
+        root = Path(source_root)
+        rel = src.resolve().relative_to(root.resolve()).as_posix()
+        if on_item:
+            on_item(index, total, rel)
+        dest = raw_root / rel
+        if src.resolve() == dest.resolve():
+            results.append(dest)
+            continue
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dest)
+        source_map[rel] = {
+            "source_path": rel,
+            "raw_source_path": f"raw/sources/{rel}",
+            "sha256": _file_sha256(src),
+            "copied_at": datetime.now(timezone.utc).isoformat(),
+        }
+        dirty = True
+        results.append(dest)
+    if dirty:
+        save_source_map(project_dir, source_map)
+    return results
+
+
 def stage_source_for_ingest(project_dir: str, source_path: str, source_root: str) -> Path:
     """Copy a selected provider file into raw/sources and record its origin."""
-    src = Path(source_path)
-    root = Path(source_root)
-    rel = src.resolve().relative_to(root.resolve()).as_posix()
-    raw_root = Path(project_dir) / "raw" / "sources"
-    dest = raw_root / rel
-    if src.resolve() == dest.resolve():
-        return dest
+    return stage_sources_for_ingest(project_dir, [(source_path, source_root)])[0]
 
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(src, dest)
-    source_map = load_source_map(project_dir)
-    source_map[rel] = {
-        "source_path": rel,
-        "raw_source_path": f"raw/sources/{rel}",
-        "sha256": _file_sha256(src),
-        "copied_at": datetime.now(timezone.utc).isoformat(),
-    }
-    save_source_map(project_dir, source_map)
-    return dest
+
+def resolve_browser_source_files(source_root: Path, source_files: list[str]) -> list[Path]:
+    """Resolve explicit browser selections without scanning the whole tree."""
+    resolved: list[Path] = []
+    for source_file in source_files:
+        src = (source_root / source_file).resolve()
+        try:
+            src.relative_to(source_root.resolve())
+        except ValueError:
+            raise ValueError(f"Invalid source file: {source_file}") from None
+        if not src.exists() or not src.is_file():
+            raise FileNotFoundError(source_file)
+        if not is_project_source_file(src, source_root):
+            raise ValueError(f"Invalid source file: {source_file}")
+        resolved.append(src)
+    return resolved
 
 
 def validate_source_pattern(pattern: str) -> str:

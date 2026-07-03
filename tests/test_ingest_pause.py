@@ -150,12 +150,16 @@ def test_enqueue_does_not_schedule_when_project_is_paused():
     queue = IngestQueue()
 
     async def run():
-        with patch.object(queue, "_create_job", AsyncMock(return_value="job-1")):
-            with patch.object(queue, "_is_project_paused", AsyncMock(return_value=True)):
+        with patch.object(queue, "_is_project_paused", AsyncMock(return_value=True)):
+            with patch("app.ingest.queue.async_session") as session_factory:
+                session = AsyncMock()
+                session.__aenter__ = AsyncMock(return_value=session)
+                session.__aexit__ = AsyncMock(return_value=False)
+                session_factory.return_value = session
                 with patch.object(queue, "_schedule_task") as schedule:
-                    job_id = await queue.enqueue("p1", "/data/proj", "/tmp/doc.pdf", 1)
+                    job_ids = await queue.enqueue_many("p1", "/data/proj", ["/tmp/doc.pdf"], 1)
 
-        assert job_id == "job-1"
+        assert len(job_ids) == 1
         schedule.assert_not_called()
 
     asyncio.run(run())

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 from dataclasses import asdict
 from datetime import datetime
@@ -18,6 +19,13 @@ from app.auth.models import User
 from app.database import get_db
 from app.documents.parser import parse_document
 from app.ingest.cache import content_hash, load_cache
+from app.ingest.enqueue_service import execute_ingest_enqueue, run_enqueue_task
+from app.ingest.enqueue_tasks import (
+    EnqueueTaskResponse,
+    create_enqueue_task,
+    get_active_enqueue_task,
+    get_enqueue_task,
+)
 from app.ingest.files import (
     IngestFileStatus,
     IngestSelection,
@@ -451,60 +459,58 @@ async def enqueue_ingest_files(
     db: AsyncSession = Depends(get_db),
 ):
     await check_membership(db, project_id, user)
+    return await execute_ingest_enqueue(project_id, body, user.id, db=db)
+
+
+@router.post("/files/enqueue/tasks", response_model=EnqueueTaskResponse, status_code=status.HTTP_202_ACCEPTED)
+async def start_enqueue_ingest_task(
+    project_id: str,
+    body: EnqueueFilesRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await check_membership(db, project_id, user)
     project = await get_project_or_404(db, project_id)
     if project.project_type == "case_library":
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
             "Wiki compilation is not available for case_library projects. Use case index rebuild instead.",
         )
-    items = await _build_file_items(project, db)
-    by_name = {item.source_file: item for item in items}
+    if not body.source_files and body.selection is None and not body.all:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "No source files selected")
 
-    if body.selection is not None:
-        try:
-            selected = apply_selection(items, _selection_from_request(body.selection))
-        except ValueError as exc:
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from None
-    elif body.all:
-        if body.status not in ("updated", "not_queued"):
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Only updated or not_queued files can be bulk enqueued")
-        selected = [item for item in items if item.status == body.status]
-    else:
-        if not body.source_files:
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, "No source files selected")
-        if body.source_kind is not None:
-            source_dir = browser_source_root(project.disk_path, body.source_kind)
-            scoped_sources = list_source_files_at_root(source_dir)
-            scoped_items = await _build_file_items(
-                project,
-                db,
-                source_dir=source_dir,
-                sources=scoped_sources,
-            )
-            by_name = {item.source_file: item for item in scoped_items}
-        missing = [source_file for source_file in body.source_files if source_file not in by_name]
-        if missing:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, f"Source file not found: {missing[0]}")
-        selected = [by_name[source_file] for source_file in body.source_files]
-
-    eligible = [item for item in selected if item.status in ("failed", "updated", "not_queued")]
-    enqueue_source_dir = (
-        browser_source_root(project.disk_path, body.source_kind)
-        if body.source_kind is not None
-        else preferred_source_root(project.disk_path)
+    file_count = len(body.source_files) if body.source_files else 0
+    task = create_enqueue_task(
+        project_id,
+        file_count=file_count,
+        stage=f"已提交 {file_count} 个文件" if file_count else "已提交入队请求",
     )
-    job_ids = []
-    for item in eligible:
-        staged = stage_source_for_ingest(project.disk_path, item.source_path, str(enqueue_source_dir))
-        job_ids.append(
-            await ingest_queue.enqueue(
-                project_id,
-                project.disk_path,
-                str(staged),
-                user.id,
-            )
-        )
-    return {"jobs": job_ids, "count": len(job_ids)}
+    asyncio.create_task(run_enqueue_task(task.task_id, project_id, body, user.id))
+    return task
+
+
+@router.get("/files/enqueue/tasks/current", response_model=EnqueueTaskResponse | None)
+async def get_current_enqueue_task(
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await check_membership(db, project_id, user)
+    return get_active_enqueue_task(project_id)
+
+
+@router.get("/files/enqueue/tasks/{task_id}", response_model=EnqueueTaskResponse)
+async def get_enqueue_task_status(
+    project_id: str,
+    task_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await check_membership(db, project_id, user)
+    task = get_enqueue_task(task_id)
+    if task is None or task.project_id != project_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Enqueue task not found")
+    return task
 
 
 @router.post("/{job_id}/retry", status_code=status.HTTP_202_ACCEPTED)
