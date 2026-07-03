@@ -128,6 +128,8 @@ async def _auto_migrate(conn) -> None:
         ("agents", "debug_result_limit", "INTEGER DEFAULT 2000"),
         ("agents", "tool_labels", "TEXT DEFAULT '{}'"),
         ("agents", "system_prompt_override", "TEXT DEFAULT ''"),
+        ("agents", "skill_token_hash", "TEXT DEFAULT NULL"),
+        ("agents", "skill_token_created_at", "DATETIME DEFAULT NULL"),
         ("projects", "git_repo_url", "TEXT DEFAULT ''"),
         ("projects", "git_branch", "TEXT DEFAULT 'main'"),
         ("projects", "git_username", "TEXT DEFAULT ''"),

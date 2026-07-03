@@ -8,6 +8,7 @@ import json
 import logging
 import secrets
 import uuid
+from datetime import datetime, timezone
 from typing import AsyncGenerator
 
 from sqlalchemy import select, delete
@@ -73,6 +74,11 @@ def generate_api_key() -> tuple[str, str]:
     """Return (raw_key, hashed_key)."""
     raw = f"lwk_{secrets.token_urlsafe(32)}"
     return raw, _hash_key(raw)
+
+
+def generate_skill_token() -> str:
+    """Return a raw Agent Skill Token."""
+    return f"lws_{secrets.token_urlsafe(32)}"
 
 
 async def create_agent(
@@ -173,6 +179,14 @@ async def regenerate_key(db: AsyncSession, agent: Agent) -> str:
     agent.api_key_hash = key_hash
     await db.commit()
     return raw_key
+
+
+async def regenerate_skill_token(db: AsyncSession, agent: Agent) -> str:
+    raw_token = generate_skill_token()
+    agent.skill_token_hash = _hash_key(raw_token)
+    agent.skill_token_created_at = datetime.now(timezone.utc)
+    await db.commit()
+    return raw_token
 
 
 async def get_agent_projects(db: AsyncSession, agent_id: str) -> list[Project]:

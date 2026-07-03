@@ -21,6 +21,8 @@ class Agent(Base):
     is_public: Mapped[bool] = mapped_column(Boolean, default=False)
     require_api_key: Mapped[bool] = mapped_column(Boolean, default=True)
     api_key_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    skill_token_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    skill_token_created_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     max_tool_calls: Mapped[int] = mapped_column(Integer, default=20)
     debug_result_limit: Mapped[int] = mapped_column(Integer, default=2000)
     tool_labels: Mapped[str] = mapped_column(Text, default="{}")
