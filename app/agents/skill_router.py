@@ -17,7 +17,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents import service
 from app.agents.models import Agent
+from app.agents.skill_refs import sign_source_ref, verify_source_ref
 from app.database import get_db
+from app.documents.service import read_document_content
+from pathlib import Path
 
 router = APIRouter(prefix="/api/public/skills", tags=["public-skills"])
 
@@ -108,6 +111,25 @@ async def collect_skill_answer(
 ) -> tuple[str, list[SkillSource]]:
     projects = await service.get_agent_projects(db, agent.id)
     chunks: list[str] = []
+    sources_by_name: dict[str, SkillSource] = {}
+
+    def add_source(doc_name: str) -> None:
+        if not doc_name or doc_name in sources_by_name:
+            return
+        for project in projects:
+            candidate = Path(project.disk_path) / "raw" / "sources" / doc_name
+            if candidate.is_file():
+                sources_by_name[doc_name] = SkillSource(
+                    name=doc_name,
+                    source_ref=sign_source_ref(
+                        agent_id=agent.id,
+                        project_id=project.id,
+                        doc_name=doc_name,
+                        display_name=doc_name,
+                    ),
+                )
+                return
+
     async for event in service.agent_toolcall_chat(
         db,
         projects,
@@ -125,7 +147,16 @@ async def collect_skill_answer(
         token = payload.get("token")
         if token:
             chunks.append(token)
-    return "".join(chunks), []
+        tool_result = payload.get("tool_result")
+        if isinstance(tool_result, dict):
+            result = tool_result.get("result")
+            if tool_result.get("name") == "read_raw" and isinstance(result, dict):
+                add_source(str(result.get("path") or ""))
+            if tool_result.get("name") == "grep_raw" and isinstance(result, dict):
+                for match in result.get("matches") or []:
+                    if isinstance(match, dict):
+                        add_source(str(match.get("file") or ""))
+    return "".join(chunks), list(sources_by_name.values())
 
 
 @router.post("/chat", response_model=SkillChatResponse)
@@ -136,6 +167,27 @@ async def skill_chat(
 ):
     answer, sources = await collect_skill_answer(db, access.agent, body.message)
     return SkillChatResponse(answer=answer, sources=sources)
+
+
+@router.get("/documents/content")
+async def read_skill_document_content(
+    ref: str,
+    access: SkillAccess = Depends(require_skill_access),
+    db: AsyncSession = Depends(get_db),
+):
+    payload = verify_source_ref(ref)
+    if payload is None or payload.agent_id != access.agent.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Source not found")
+
+    projects = await service.get_agent_projects(db, access.agent.id)
+    project = next((p for p in projects if p.id == payload.project_id), None)
+    if project is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Source not found")
+
+    content = read_document_content(project, payload.doc_name)
+    if content is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Source not found")
+    return PlainTextResponse(content)
 
 
 @router.get("/{install_token}")
