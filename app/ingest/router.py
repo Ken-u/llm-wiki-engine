@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,7 +18,9 @@ from app.documents.parser import parse_document
 from app.ingest.cache import content_hash, load_cache
 from app.ingest.files import (
     IngestFileStatus,
+    IngestSelection,
     SortDirection,
+    apply_selection,
     filter_and_sort_items,
     paginate_items,
     resolve_file_statuses,
@@ -35,10 +37,28 @@ class IngestRequest(BaseModel):
     source_files: list[str] | None = None
 
 
+class IngestSelectionRequest(BaseModel):
+    statuses: list[IngestFileStatus] = Field(default_factory=list)
+    include_globs: list[str] = Field(default_factory=list)
+    exclude_globs: list[str] = Field(default_factory=list)
+    q: str = ""
+    limit: int | None = None
+
+    def to_selection(self) -> IngestSelection:
+        return IngestSelection(
+            statuses=self.statuses,
+            include_globs=self.include_globs,
+            exclude_globs=self.exclude_globs,
+            search=self.q,
+            limit=self.limit,
+        )
+
+
 class EnqueueFilesRequest(BaseModel):
     source_files: list[str] | None = None
     status: IngestFileStatus | None = None
     all: bool = False
+    selection: IngestSelectionRequest | None = None
 
 
 class IngestJobResponse(BaseModel):
@@ -79,6 +99,13 @@ class IngestFilePageResponse(BaseModel):
     page_size: int
     project_paused: bool
     status_counts: dict[str, int]
+
+
+class IngestFilePreviewResponse(BaseModel):
+    items: list[IngestFileResponse]
+    total: int
+    eligible_count: int
+    truncated: bool
 
 
 def _source_dir(project_dir: str) -> Path:
@@ -170,7 +197,7 @@ async def trigger_ingest(
     else:
         if not source_dir.exists():
             raise HTTPException(status.HTTP_404_NOT_FOUND, "No sources directory")
-        sources = [f for f in source_dir.iterdir() if f.is_file() and not f.name.startswith(".")]
+        sources = _list_source_files(project.disk_path)
 
     if not sources:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "No source files found")
@@ -214,6 +241,43 @@ async def ingest_files(
     }
 
 
+def _selection_from_request(body: IngestSelectionRequest) -> IngestSelection:
+    try:
+        return body.to_selection()
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from None
+
+
+@router.post("/files/preview", response_model=IngestFilePreviewResponse)
+async def preview_ingest_files(
+    project_id: str,
+    body: IngestSelectionRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await check_membership(db, project_id, user)
+    project = await get_project_or_404(db, project_id)
+    if project.project_type == "case_library":
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "Wiki compilation is not available for case_library projects. Use case index rebuild instead.",
+        )
+
+    items = await _build_file_items(project, db)
+    try:
+        matched = apply_selection(items, _selection_from_request(body))
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from None
+    eligible = [item for item in matched if item.status in ("failed", "updated", "not_queued")]
+    preview_limit = 100
+    return {
+        "items": [asdict(item) for item in matched[:preview_limit]],
+        "total": len(matched),
+        "eligible_count": len(eligible),
+        "truncated": len(matched) > preview_limit,
+    }
+
+
 @router.post("/files/enqueue", status_code=status.HTTP_202_ACCEPTED)
 async def enqueue_ingest_files(
     project_id: str,
@@ -231,7 +295,12 @@ async def enqueue_ingest_files(
     items = await _build_file_items(project, db)
     by_name = {item.source_file: item for item in items}
 
-    if body.all:
+    if body.selection is not None:
+        try:
+            selected = apply_selection(items, _selection_from_request(body.selection))
+        except ValueError as exc:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from None
+    elif body.all:
         if body.status not in ("updated", "not_queued"):
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Only updated or not_queued files can be bulk enqueued")
         selected = [item for item in items if item.status == body.status]

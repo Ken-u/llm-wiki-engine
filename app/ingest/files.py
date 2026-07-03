@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Literal
 
@@ -46,6 +47,15 @@ class IngestFilePage:
     page_size: int = 10
 
 
+@dataclass
+class IngestSelection:
+    statuses: list[IngestFileStatus] = field(default_factory=list)
+    include_globs: list[str] = field(default_factory=list)
+    exclude_globs: list[str] = field(default_factory=list)
+    search: str = ""
+    limit: int | None = None
+
+
 def source_identity(path: str, source_root: str | None = None) -> str:
     source_path = Path(path)
     if source_root:
@@ -54,6 +64,57 @@ def source_identity(path: str, source_root: str | None = None) -> str:
         except ValueError:
             pass
     return source_path.name
+
+
+def validate_source_pattern(pattern: str) -> str:
+    normalized = pattern.strip().replace("\\", "/")
+    if not normalized:
+        raise ValueError("Empty source pattern")
+    if normalized.startswith("/") or normalized.startswith("../") or "/../" in normalized or normalized == "..":
+        raise ValueError(f"Invalid source pattern: {pattern}")
+    return normalized
+
+
+def _matches_glob(identity: str, pattern: str) -> bool:
+    normalized = validate_source_pattern(pattern)
+    if fnmatchcase(identity, normalized):
+        return True
+    if "/" not in normalized and fnmatchcase(Path(identity).name, normalized):
+        return True
+    if normalized.endswith("/"):
+        return identity.startswith(normalized)
+    return False
+
+
+def apply_selection(items: list[IngestFileItem], selection: IngestSelection) -> list[IngestFileItem]:
+    """Filter source items with status/search/glob rules."""
+    selected = items
+    if selection.statuses:
+        allowed = set(selection.statuses)
+        selected = [item for item in selected if item.status in allowed]
+
+    needle = selection.search.strip().lower()
+    if needle:
+        selected = [item for item in selected if needle in item.source_file.lower()]
+
+    includes = [validate_source_pattern(p) for p in selection.include_globs if p.strip()]
+    excludes = [validate_source_pattern(p) for p in selection.exclude_globs if p.strip()]
+
+    if includes:
+        selected = [
+            item for item in selected
+            if any(_matches_glob(item.source_file, pattern) for pattern in includes)
+        ]
+    if excludes:
+        selected = [
+            item for item in selected
+            if not any(_matches_glob(item.source_file, pattern) for pattern in excludes)
+        ]
+
+    selected = sorted(selected, key=lambda item: item.source_file.lower())
+    if selection.limit is not None:
+        selected = selected[:max(0, selection.limit)]
+    return selected
 
 
 def _job_file_status(job_status: str) -> IngestFileStatus | None:

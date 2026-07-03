@@ -164,6 +164,47 @@ def _commit_and_push(project: Project) -> bool:
     return True
 
 
+def _publish_remote_name() -> str:
+    return "llmwiki-publish"
+
+
+def _commit_and_publish(project: Project) -> bool:
+    """Commit current worktree and push it to a separate publish remote."""
+    publish_url = getattr(project, "publish_repo_url", "") or ""
+    if not publish_url:
+        raise RuntimeError("未配置发布仓库 URL")
+    token = getattr(project, "publish_auth_token", "") or ""
+    if not token:
+        raise RuntimeError("未配置发布仓库访问凭证")
+
+    root = str(Path(project.disk_path))
+    branch = getattr(project, "publish_branch", "") or "main"
+    remote = _publish_remote_name()
+
+    _run_git(["add", "-A"], cwd=root)
+    status = _run_git(["status", "--porcelain"], cwd=root)
+    if status.stdout.strip():
+        commit_args = []
+        author_name = getattr(project, "publish_author_name", "") or project.git_author_name
+        author_email = getattr(project, "publish_author_email", "") or project.git_author_email
+        if author_name:
+            commit_args.extend(["-c", f"user.name={author_name}"])
+        if author_email:
+            commit_args.extend(["-c", f"user.email={author_email}"])
+        commit_args.extend(["commit", "-m", f"publish: mirror {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"])
+        _run_git(commit_args, cwd=root)
+
+    authed_url = _inject_auth(publish_url, token, username=getattr(project, "publish_username", "") or "")
+    existing = _run_git(["remote"], cwd=root).stdout.splitlines()
+    if remote in existing:
+        _run_git(["remote", "set-url", remote, authed_url], cwd=root)
+    else:
+        _run_git(["remote", "add", remote, authed_url], cwd=root)
+    _run_git(["push", remote, f"HEAD:{branch}"], cwd=root)
+    logger.info("Published %s to %s/%s", root, remote, branch)
+    return True
+
+
 def _should_auto_enqueue_compile(project: Project) -> bool:
     return bool(project.git_sync_auto_compile) and not bool(project.ingest_paused)
 
@@ -193,6 +234,82 @@ async def test_project_git_connection(project: Project) -> dict:
         if "Authentication" in error_msg or "403" in error_msg or "401" in error_msg:
             return {"ok": False, "error": "认证失败，请检查用户名和密码/Token"}
         return {"ok": False, "error": f"连接失败: {error_msg[:200]}"}
+
+
+async def test_project_publish_connection(project: Project) -> dict:
+    """Test publish repository connectivity without touching origin."""
+    repo_url = getattr(project, "publish_repo_url", "") or ""
+    token = getattr(project, "publish_auth_token", "") or ""
+    branch = getattr(project, "publish_branch", "") or "main"
+    username = getattr(project, "publish_username", "") or ""
+    if not repo_url:
+        return {"ok": False, "error": "未配置发布仓库 URL"}
+    if not token:
+        return {"ok": False, "error": "未配置发布仓库访问凭证"}
+
+    authed_url = _inject_auth(repo_url, token, username=username)
+    loop = asyncio.get_event_loop()
+    try:
+        result = await loop.run_in_executor(
+            None,
+            lambda: _run_git(["ls-remote", "--heads", authed_url, branch], check=False),
+        )
+        if result.returncode in (0, 2):
+            return {"ok": True, "error": ""}
+        details = (result.stderr or result.stdout or "").strip()
+        return {"ok": False, "error": f"连接失败: {details[:200]}"}
+    except RuntimeError as exc:
+        return {"ok": False, "error": f"连接失败: {str(exc)[:200]}"}
+
+
+async def publish_project_to_git(project_id: str, *, triggered_by: int = 0) -> None:
+    """Push the project worktree to a separate publish remote."""
+    lock = _get_sync_lock(f"{project_id}:publish")
+    if lock.locked():
+        raise RuntimeError("该项目已有发布正在执行")
+
+    async with lock:
+        async with async_session() as db:
+            project = (await db.execute(
+                select(Project).where(Project.id == project_id)
+            )).scalar_one_or_none()
+            if not project:
+                raise RuntimeError(f"Project {project_id} not found")
+            if not project.publish_repo_url or not project.publish_auth_token:
+                raise RuntimeError("发布仓库配置不完整")
+
+            project.last_publish_status = "syncing"
+            project.last_publish_error = ""
+            await db.commit()
+
+        try:
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, lambda: _commit_and_publish(project))
+            async with async_session() as db:
+                await db.execute(
+                    update(Project)
+                    .where(Project.id == project_id)
+                    .values(
+                        last_publish_at=datetime.now(timezone.utc),
+                        last_publish_status="success",
+                        last_publish_error="",
+                    )
+                )
+                await db.commit()
+            logger.info("Git publish completed for project %s by user %s", project_id, triggered_by)
+        except Exception as exc:
+            logger.exception("Git publish failed for project %s", project_id)
+            async with async_session() as db:
+                await db.execute(
+                    update(Project)
+                    .where(Project.id == project_id)
+                    .values(
+                        last_publish_status="failed",
+                        last_publish_error=str(exc)[:500],
+                    )
+                )
+                await db.commit()
+            raise
 
 
 async def sync_project_from_git(
@@ -247,7 +364,7 @@ async def sync_project_from_git(
                     content = parse_document(src_file)
                     if not content.strip():
                         continue
-                    source_identity = src_file.name
+                    source_identity = src_file.resolve().relative_to(raw_dir.resolve()).as_posix()
                     if not await check_cache(project.disk_path, source_identity, content):
                         changed_files.append(src_file)
                 except Exception:

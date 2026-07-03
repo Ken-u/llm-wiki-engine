@@ -42,7 +42,7 @@ if "apscheduler" not in sys.modules:
     sys.modules["apscheduler.triggers.cron"] = cron_mod
 
 from app.projects import git_sync
-from app.projects.git_sync import _ensure_repo, _inject_auth
+from app.projects.git_sync import _commit_and_publish, _ensure_repo, _inject_auth
 
 
 def test_inject_auth_with_token():
@@ -180,3 +180,50 @@ def test_ensure_repo_raises_when_fallback_checkout_leaves_invalid_head(tmp_path,
         assert "main" in str(exc)
     else:
         raise AssertionError("_ensure_repo should reject invalid HEAD state")
+
+
+def test_commit_and_publish_uses_separate_remote_without_changing_origin(tmp_path):
+    source_remote = tmp_path / "source.git"
+    publish_remote = tmp_path / "publish.git"
+    worktree = tmp_path / "worktree"
+    subprocess.run(["git", "init", "--bare", str(source_remote)], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "init", "--bare", str(publish_remote)], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "init", str(worktree)], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(worktree), "remote", "add", "origin", str(source_remote)], check=True, capture_output=True, text=True)
+    (worktree / "README.md").write_text("hello\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(worktree), "add", "README.md"], check=True, capture_output=True, text=True)
+    subprocess.run(
+        ["git", "-C", str(worktree), "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "init"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    project = SimpleNamespace(
+        disk_path=str(worktree),
+        git_author_name="",
+        git_author_email="",
+        publish_repo_url=str(publish_remote),
+        publish_auth_token="token",
+        publish_username="",
+        publish_branch="main",
+        publish_author_name="Publisher",
+        publish_author_email="publisher@example.com",
+    )
+
+    _commit_and_publish(project)
+
+    origin_url = subprocess.run(
+        ["git", "-C", str(worktree), "remote", "get-url", "origin"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    publish_refs = subprocess.run(
+        ["git", "--git-dir", str(publish_remote), "show-ref", "refs/heads/main"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert origin_url == str(source_remote)
+    assert publish_refs

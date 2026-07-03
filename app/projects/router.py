@@ -49,6 +49,16 @@ class ProjectResponse(BaseModel):
     last_git_sync_at: datetime | None = None
     last_git_sync_status: str = "idle"
     last_git_sync_error: str = ""
+    publish_repo_url: str = ""
+    publish_branch: str = "main"
+    publish_username: str = ""
+    publish_author_name: str = ""
+    publish_author_email: str = ""
+    publish_enabled: bool = False
+    publish_auth_configured: bool = False
+    last_publish_at: datetime | None = None
+    last_publish_status: str = "idle"
+    last_publish_error: str = ""
     ingest_paused: bool = False
     project_type: str = "knowledge_base"
     case_index_auto_rebuild: bool = False
@@ -72,6 +82,14 @@ class UpdateProjectRequest(BaseModel):
     git_sync_enabled: bool | None = None
     git_sync_auto_compile: bool | None = None
     git_sync_time: str | None = None
+    publish_repo_url: str | None = None
+    publish_branch: str | None = None
+    publish_username: str | None = None
+    publish_auth_token: str | None = None
+    clear_publish_auth_token: bool | None = None
+    publish_author_name: str | None = None
+    publish_author_email: str | None = None
+    publish_enabled: bool | None = None
     case_index_auto_rebuild: bool | None = None
     ingest_paused: bool | None = None
 
@@ -81,6 +99,13 @@ class TestGitConnectionRequest(BaseModel):
     git_branch: str | None = None
     git_username: str | None = None
     git_auth_token: str | None = None
+
+
+class TestPublishConnectionRequest(BaseModel):
+    publish_repo_url: str | None = None
+    publish_branch: str | None = None
+    publish_username: str | None = None
+    publish_auth_token: str | None = None
 
 
 class AddMemberRequest(BaseModel):
@@ -126,6 +151,16 @@ async def _build_project_response(db: AsyncSession, proj: Project) -> ProjectRes
         last_git_sync_at=proj.last_git_sync_at,
         last_git_sync_status=proj.last_git_sync_status,
         last_git_sync_error=proj.last_git_sync_error,
+        publish_repo_url=proj.publish_repo_url,
+        publish_branch=proj.publish_branch,
+        publish_username=proj.publish_username,
+        publish_author_name=proj.publish_author_name,
+        publish_author_email=proj.publish_author_email,
+        publish_enabled=proj.publish_enabled,
+        publish_auth_configured=bool(proj.publish_auth_token),
+        last_publish_at=proj.last_publish_at,
+        last_publish_status=proj.last_publish_status,
+        last_publish_error=proj.last_publish_error,
         ingest_paused=proj.ingest_paused,
         project_type=proj.project_type,
         case_index_auto_rebuild=proj.case_index_auto_rebuild,
@@ -138,6 +173,23 @@ def _project_for_git_test(project: Project, body: TestGitConnectionRequest | Non
         git_branch=body.git_branch if body and body.git_branch is not None else project.git_branch,
         git_username=body.git_username if body and body.git_username is not None else project.git_username,
         git_auth_token=body.git_auth_token if body and body.git_auth_token is not None else project.git_auth_token,
+    )
+
+
+def _project_for_publish_test(project: Project, body: TestPublishConnectionRequest | None):
+    return SimpleNamespace(
+        publish_repo_url=(
+            body.publish_repo_url if body and body.publish_repo_url is not None else project.publish_repo_url
+        ),
+        publish_branch=(
+            body.publish_branch if body and body.publish_branch is not None else project.publish_branch
+        ),
+        publish_username=(
+            body.publish_username if body and body.publish_username is not None else project.publish_username
+        ),
+        publish_auth_token=(
+            body.publish_auth_token if body and body.publish_auth_token is not None else project.publish_auth_token
+        ),
     )
 
 
@@ -217,6 +269,18 @@ async def update_project(
         kwargs["git_auth_token"] = body.git_auth_token
     if "clear_git_auth_token" in body.model_fields_set and body.clear_git_auth_token:
         kwargs["git_auth_token"] = ""
+
+    publish_fields = [
+        "publish_repo_url", "publish_branch", "publish_username",
+        "publish_author_name", "publish_author_email", "publish_enabled",
+    ]
+    for field in publish_fields:
+        if field in body.model_fields_set:
+            kwargs[field] = getattr(body, field)
+    if "publish_auth_token" in body.model_fields_set and body.publish_auth_token:
+        kwargs["publish_auth_token"] = body.publish_auth_token
+    if "clear_publish_auth_token" in body.model_fields_set and body.clear_publish_auth_token:
+        kwargs["publish_auth_token"] = ""
 
     proj = await service.update_project(db, proj, **kwargs)
 
@@ -308,4 +372,52 @@ async def get_git_sync_status(
         "last_git_sync_at": proj.last_git_sync_at.isoformat() if proj.last_git_sync_at else None,
         "last_git_sync_status": proj.last_git_sync_status,
         "last_git_sync_error": proj.last_git_sync_error,
+    }
+
+
+@router.post("/{project_id}/git/publish/test")
+async def test_publish_connection(
+    project_id: str,
+    body: TestPublishConnectionRequest | None = None,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await service.check_membership(db, project_id, user, require="owner")
+    proj = await service.get_project_or_404(db, project_id)
+    from app.projects.git_sync import test_project_publish_connection
+    return await test_project_publish_connection(_project_for_publish_test(proj, body))
+
+
+@router.post("/{project_id}/git/publish")
+async def trigger_git_publish(
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    import asyncio
+    await service.check_membership(db, project_id, user)
+    proj = await service.get_project_or_404(db, project_id)
+    if not proj.publish_repo_url:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "未配置发布仓库")
+    from app.projects.git_sync import publish_project_to_git, _get_sync_lock
+    lock = _get_sync_lock(f"{project_id}:publish")
+    if lock.locked():
+        raise HTTPException(status.HTTP_409_CONFLICT, "该项目已有发布正在执行")
+    asyncio.create_task(publish_project_to_git(project_id, triggered_by=user.id))
+    return {"status": "started"}
+
+
+@router.get("/{project_id}/git/publish/status")
+async def get_git_publish_status(
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await service.check_membership(db, project_id, user)
+    proj = await service.get_project_or_404(db, project_id)
+    return {
+        "publish_enabled": proj.publish_enabled,
+        "last_publish_at": proj.last_publish_at.isoformat() if proj.last_publish_at else None,
+        "last_publish_status": proj.last_publish_status,
+        "last_publish_error": proj.last_publish_error,
     }

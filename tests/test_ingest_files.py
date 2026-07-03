@@ -5,9 +5,12 @@ from types import SimpleNamespace
 
 from app.ingest.files import (
     IngestFileItem,
+    IngestSelection,
+    apply_selection,
     filter_and_sort_items,
     paginate_items,
     resolve_file_statuses,
+    source_identity,
 )
 
 
@@ -180,3 +183,43 @@ def test_filter_and_sort_items_searches_before_name_sorting():
     filtered = filter_and_sort_items(items, search="alpha", sort_dir="desc")
 
     assert [item.source_file for item in filtered] == ["z-alpha.md", "alpha-guide.md"]
+
+
+def test_apply_selection_filters_by_status_globs_excludes_and_query():
+    items = [
+        IngestFileItem(source_file="docs/a.md", source_path="/tmp/docs/a.md", status="updated"),
+        IngestFileItem(source_file="docs/draft/b.md", source_path="/tmp/docs/draft/b.md", status="updated"),
+        IngestFileItem(source_file="tickets/RK-123.md", source_path="/tmp/tickets/RK-123.md", status="not_queued"),
+        IngestFileItem(source_file="tickets/RK-456.txt", source_path="/tmp/tickets/RK-456.txt", status="compiled"),
+    ]
+
+    selected = apply_selection(
+        items,
+        IngestSelection(
+            statuses=["updated", "not_queued"],
+            include_globs=["docs/**/*.md", "RK-*.md"],
+            exclude_globs=["**/draft/**"],
+            search="rk",
+        ),
+    )
+
+    assert [item.source_file for item in selected] == ["tickets/RK-123.md"]
+
+
+def test_apply_selection_rejects_path_traversal_patterns():
+    try:
+        apply_selection(
+            [IngestFileItem(source_file="a.md", source_path="/tmp/a.md", status="updated")],
+            IngestSelection(include_globs=["../secret.md"]),
+        )
+    except ValueError as exc:
+        assert "Invalid source pattern" in str(exc)
+    else:
+        raise AssertionError("path traversal pattern should be rejected")
+
+
+def test_source_identity_returns_relative_path_for_nested_source_root():
+    assert source_identity(
+        "/project/raw/sources/a/guide.md",
+        "/project/raw/sources",
+    ) == "a/guide.md"

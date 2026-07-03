@@ -134,7 +134,15 @@ async def _export_config_bundle(db) -> dict:
                 "git_author_name": p.git_author_name,
                 "git_author_email": p.git_author_email,
                 "git_sync_enabled": p.git_sync_enabled,
+                "git_sync_auto_compile": p.git_sync_auto_compile,
                 "git_sync_time": p.git_sync_time,
+                "publish_repo_url": p.publish_repo_url,
+                "publish_branch": p.publish_branch,
+                "publish_username": p.publish_username,
+                "publish_auth_token": p.publish_auth_token,
+                "publish_author_name": p.publish_author_name,
+                "publish_author_email": p.publish_author_email,
+                "publish_enabled": p.publish_enabled,
             }
             for p in projects
         ],
@@ -231,7 +239,15 @@ async def _restore_config_bundle(db, bundle: dict) -> dict[str, int]:
             git_author_name=row.get("git_author_name", ""),
             git_author_email=row.get("git_author_email", ""),
             git_sync_enabled=row.get("git_sync_enabled", False),
+            git_sync_auto_compile=row.get("git_sync_auto_compile", False),
             git_sync_time=row.get("git_sync_time", "02:00"),
+            publish_repo_url=row.get("publish_repo_url", ""),
+            publish_branch=row.get("publish_branch", "main"),
+            publish_username=row.get("publish_username", ""),
+            publish_auth_token=row.get("publish_auth_token", ""),
+            publish_author_name=row.get("publish_author_name", ""),
+            publish_author_email=row.get("publish_author_email", ""),
+            publish_enabled=row.get("publish_enabled", False),
         ))
     await db.flush()
 

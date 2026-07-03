@@ -178,6 +178,13 @@ async def update_project(
     git_sync_enabled: bool | None = None,
     git_sync_auto_compile: bool | None = None,
     git_sync_time: str | None = None,
+    publish_repo_url: str | None = None,
+    publish_branch: str | None = None,
+    publish_username: str | None = None,
+    publish_auth_token: str | None = None,
+    publish_author_name: str | None = None,
+    publish_author_email: str | None = None,
+    publish_enabled: bool | None = None,
 ) -> Project:
     """Update project fields. Pass ticket_project_id=None to clear binding."""
     if name is not None:
@@ -227,6 +234,13 @@ async def update_project(
         "git_sync_enabled": git_sync_enabled,
         "git_sync_auto_compile": git_sync_auto_compile,
         "git_sync_time": git_sync_time,
+        "publish_repo_url": publish_repo_url,
+        "publish_branch": publish_branch,
+        "publish_username": publish_username,
+        "publish_auth_token": publish_auth_token,
+        "publish_author_name": publish_author_name,
+        "publish_author_email": publish_author_email,
+        "publish_enabled": publish_enabled,
     }
     for field_name, value in git_simple_fields.items():
         if value is not None:

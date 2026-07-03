@@ -45,6 +45,16 @@ class Project(Base):
     last_git_sync_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
     last_git_sync_status: Mapped[str] = mapped_column(String(16), default="idle")
     last_git_sync_error: Mapped[str] = mapped_column(Text, default="")
+    publish_repo_url: Mapped[str] = mapped_column(String(512), default="", server_default="")
+    publish_branch: Mapped[str] = mapped_column(String(128), default="main", server_default="main")
+    publish_username: Mapped[str] = mapped_column(String(128), default="", server_default="")
+    publish_auth_token: Mapped[str] = mapped_column(String(512), default="", server_default="")
+    publish_author_name: Mapped[str] = mapped_column(String(128), default="", server_default="")
+    publish_author_email: Mapped[str] = mapped_column(String(256), default="", server_default="")
+    publish_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    last_publish_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
+    last_publish_status: Mapped[str] = mapped_column(String(16), default="idle", server_default="idle")
+    last_publish_error: Mapped[str] = mapped_column(Text, default="", server_default="")
     ingest_paused: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     project_type: Mapped[str] = mapped_column(
         String(32), default="knowledge_base", server_default="knowledge_base"
