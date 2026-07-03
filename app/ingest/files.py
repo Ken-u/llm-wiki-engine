@@ -13,6 +13,7 @@ from typing import Literal
 
 IngestFileStatus = Literal["processing", "queued", "failed", "updated", "not_queued", "compiled"]
 SortDirection = Literal["asc", "desc"]
+SourceKind = Literal["remote", "local"]
 
 _STATUS_PRIORITY: dict[IngestFileStatus, int] = {
     "processing": 0,
@@ -38,6 +39,7 @@ class IngestFileItem:
     source_file: str
     source_path: str
     status: IngestFileStatus
+    file_size: int | None = None
     job_id: str | None = None
     job_status: str | None = None
     progress: str = ""
@@ -84,6 +86,29 @@ def provider_source_root(project_dir: str) -> Path:
     return Path(project_dir) / ".llm-wiki" / "source-repo"
 
 
+def local_source_root(project_dir: str) -> Path:
+    return Path(project_dir) / "raw" / "sources"
+
+
+def browser_source_root(project_dir: str, source_kind: SourceKind) -> Path:
+    if source_kind == "remote":
+        return provider_source_root(project_dir)
+    return local_source_root(project_dir)
+
+
+def list_source_files_at_root(source_root: Path) -> list[Path]:
+    if not source_root.exists():
+        return []
+    files = [
+        path for path in source_root.rglob("*")
+        if is_project_source_file(path, source_root)
+    ]
+    return sorted(
+        files,
+        key=lambda path: path.resolve().relative_to(source_root.resolve()).as_posix().lower(),
+    )
+
+
 def preferred_source_root(project_dir: str) -> Path:
     """Return provider checkout when populated, then raw/sources, then project root.
 
@@ -109,6 +134,16 @@ def preferred_source_root(project_dir: str) -> Path:
 
 def is_project_source_file(path: Path, source_root: Path) -> bool:
     if not path.is_file() or path.name.startswith("."):
+        return False
+    try:
+        rel = path.resolve().relative_to(source_root.resolve())
+    except ValueError:
+        return False
+    return not any(part in _EXCLUDED_REPO_SOURCE_DIRS for part in rel.parts)
+
+
+def is_project_source_dir(path: Path, source_root: Path) -> bool:
+    if not path.is_dir() or path.name.startswith("."):
         return False
     try:
         rel = path.resolve().relative_to(source_root.resolve())
@@ -307,10 +342,13 @@ def resolve_file_statuses(
         else:
             status = "not_queued"
 
+        source = Path(source_path)
+        file_size = source.stat().st_size if source.is_file() else None
         items.append(
             IngestFileItem(
                 source_file=identity,
                 source_path=source_path,
+                file_size=file_size,
                 status=status,
                 job_id=getattr(job, "id", None) if job else None,
                 job_status=getattr(job, "status", None) if job else None,

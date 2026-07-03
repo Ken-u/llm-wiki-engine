@@ -7,9 +7,12 @@ from app.ingest.files import (
     IngestFileItem,
     IngestSelection,
     apply_selection,
+    browser_source_root,
     filter_and_sort_items,
     list_project_source_files,
+    list_source_files_at_root,
     load_source_map,
+    local_source_root,
     paginate_items,
     provider_source_root,
     resolve_file_statuses,
@@ -291,3 +294,19 @@ def test_stage_source_for_ingest_copies_selected_provider_file_and_records_map(t
     assert source_map["docs/guide.md"]["source_path"] == "docs/guide.md"
     assert source_map["docs/guide.md"]["raw_source_path"] == "raw/sources/docs/guide.md"
     assert source_map["docs/guide.md"]["sha256"]
+
+
+def test_browser_source_roots_split_remote_and_local(tmp_path):
+    project = tmp_path / "project"
+    provider = provider_source_root(str(project))
+    local = local_source_root(str(project))
+    (provider / "remote").mkdir(parents=True)
+    (local / "uploads").mkdir(parents=True)
+    (provider / "remote" / "guide.md").write_text("remote", encoding="utf-8")
+    (local / "uploads" / "manual.md").write_text("local", encoding="utf-8")
+
+    remote_files = list_source_files_at_root(browser_source_root(str(project), "remote"))
+    local_files = list_source_files_at_root(browser_source_root(str(project), "local"))
+
+    assert [path.relative_to(provider).as_posix() for path in remote_files] == ["remote/guide.md"]
+    assert [path.relative_to(local).as_posix() for path in local_files] == ["uploads/manual.md"]
