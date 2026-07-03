@@ -8,7 +8,9 @@ from app.ingest.files import (
     IngestSelection,
     apply_selection,
     browser_source_root,
+    build_ingest_record_page,
     filter_and_sort_items,
+    is_ingest_records_request,
     list_project_source_files,
     list_source_files_at_root,
     load_source_map,
@@ -310,3 +312,92 @@ def test_browser_source_roots_split_remote_and_local(tmp_path):
 
     assert [path.relative_to(provider).as_posix() for path in remote_files] == ["remote/guide.md"]
     assert [path.relative_to(local).as_posix() for path in local_files] == ["uploads/manual.md"]
+
+
+def test_is_ingest_records_request_requires_status_without_recursive_scan():
+    assert is_ingest_records_request(
+        status_filter="processing",
+        recursive=False,
+        has_filters=False,
+        dir="",
+    )
+    assert not is_ingest_records_request(
+        status_filter="processing",
+        recursive=True,
+        has_filters=False,
+        dir="",
+    )
+    assert not is_ingest_records_request(
+        status_filter=None,
+        recursive=False,
+        has_filters=False,
+        dir="",
+    )
+
+
+def test_build_ingest_record_page_uses_jobs_only_for_processing_tab(tmp_path):
+    project = tmp_path / "project"
+    raw = local_source_root(str(project))
+    provider = provider_source_root(str(project))
+    provider.mkdir(parents=True)
+    (provider / "huge-tree.md").write_text("never scan me", encoding="utf-8")
+
+    active = raw / "active.md"
+    active.parent.mkdir(parents=True)
+    active.write_text("active", encoding="utf-8")
+    now = datetime.now(timezone.utc)
+    jobs = [
+        SimpleNamespace(
+            id="job-1",
+            source_path=str(active),
+            status="processing",
+            files_written=None,
+            error=None,
+            progress="Analyzing",
+            step=1,
+            retry_count=0,
+            created_at=now,
+            completed_at=None,
+        ),
+    ]
+
+    page = build_ingest_record_page(
+        project_dir=str(project),
+        jobs=jobs,
+        cache={},
+        status_filter="processing",
+        sort_dir="asc",
+        page=1,
+        page_size=10,
+    )
+
+    assert [item.source_file for item in page.items] == ["active.md"]
+    assert page.counts["processing"] == 1
+    assert page.counts["compiled"] == 0
+
+
+def test_build_ingest_record_page_compiled_tab_uses_cache_not_provider_tree(tmp_path):
+    project = tmp_path / "project"
+    raw = local_source_root(str(project))
+    provider = provider_source_root(str(project))
+    provider.mkdir(parents=True)
+    (provider / "only-in-remote.md").write_text("remote only", encoding="utf-8")
+
+    compiled = raw / "done.md"
+    compiled.parent.mkdir(parents=True)
+    compiled.write_text("done", encoding="utf-8")
+
+    from app.ingest.cache import content_hash
+
+    page = build_ingest_record_page(
+        project_dir=str(project),
+        jobs=[],
+        cache={"done.md": content_hash("done")},
+        status_filter="compiled",
+        sort_dir="asc",
+        page=1,
+        page_size=10,
+    )
+
+    assert [item.source_file for item in page.items] == ["done.md"]
+    assert page.counts["compiled"] == 1

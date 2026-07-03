@@ -25,7 +25,9 @@ from app.ingest.files import (
     SourceKind,
     apply_selection,
     browser_source_root,
+    build_ingest_record_page,
     filter_and_sort_items,
+    is_ingest_records_request,
     is_project_source_dir,
     is_project_source_file,
     list_project_source_files,
@@ -282,6 +284,44 @@ async def ingest_files(
         search=q,
     )
     has_filters = bool(q.strip() or filter_selection.include_globs or filter_selection.exclude_globs)
+    if is_ingest_records_request(
+        status_filter=status_filter,
+        recursive=recursive,
+        has_filters=has_filters,
+        dir=dir,
+    ):
+        jobs = list(
+            (
+                await db.execute(
+                    select(IngestJob)
+                    .where(IngestJob.project_id == project.id)
+                    .where(IngestJob.status != "superseded")
+                    .order_by(IngestJob.created_at.asc())
+                )
+            ).scalars().all()
+        )
+        cache = await load_cache(project.disk_path)
+        record_page = build_ingest_record_page(
+            project_dir=project.disk_path,
+            jobs=jobs,
+            cache=cache,
+            status_filter=status_filter,
+            sort_dir=sort_dir,
+            page=page,
+            page_size=page_size,
+        )
+        return {
+            "items": [asdict(item) for item in record_page.items],
+            "directories": [],
+            "dir": "",
+            "recursive": False,
+            "total": record_page.total,
+            "page": record_page.page,
+            "page_size": record_page.page_size,
+            "project_paused": bool(project.ingest_paused),
+            "status_counts": record_page.counts,
+        }
+
     source_dir = browser_source_root(project.disk_path, source_kind)
     if recursive or has_filters:
         sources = list_source_files_at_root(source_dir)

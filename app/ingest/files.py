@@ -11,7 +11,11 @@ from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Literal
 
+from app.documents.parser import parse_document
+from app.ingest.cache import content_hash
+
 IngestFileStatus = Literal["processing", "queued", "failed", "updated", "not_queued", "compiled"]
+INGEST_RECORD_STATUSES = frozenset({"processing", "queued", "failed", "updated", "compiled"})
 SortDirection = Literal["asc", "desc"]
 SourceKind = Literal["remote", "local"]
 
@@ -57,6 +61,15 @@ class IngestFilePage:
     total: int = 0
     page: int = 1
     page_size: int = 10
+
+
+@dataclass
+class IngestRecordPageResult:
+    items: list[IngestFileItem]
+    counts: dict[str, int]
+    total: int
+    page: int
+    page_size: int
 
 
 @dataclass
@@ -280,6 +293,115 @@ def _job_file_status(job_status: str) -> IngestFileStatus | None:
 
 def _job_sort_key(job) -> datetime:
     return job.created_at or job.completed_at or datetime.min
+
+
+def is_ingest_records_request(
+    *,
+    status_filter: IngestFileStatus | None,
+    recursive: bool,
+    has_filters: bool,
+    dir: str,
+) -> bool:
+    """Compile-page tabs: list from jobs/cache only, never scan the full source tree."""
+    return (
+        status_filter is not None
+        and status_filter in INGEST_RECORD_STATUSES
+        and not recursive
+        and not has_filters
+        and not dir.strip()
+    )
+
+
+def detect_changed_identities(source_dir: Path, cache: dict[str, str]) -> set[str]:
+    """Compare cached hashes against staged raw/sources files (not the whole repo)."""
+    changed: set[str] = set()
+    for identity in cache:
+        src = source_dir / identity
+        if not src.is_file():
+            continue
+        cache_key = identity if identity in cache else src.name
+        try:
+            if content_hash(parse_document(src)) != cache[cache_key]:
+                changed.add(identity)
+        except Exception:
+            changed.add(identity)
+    return changed
+
+
+def _job_source_paths(jobs: list) -> list[str]:
+    return list({job.source_path for job in jobs})
+
+
+def build_ingest_record_page(
+    *,
+    project_dir: str,
+    jobs: list,
+    cache: dict[str, str],
+    status_filter: IngestFileStatus,
+    sort_dir: SortDirection,
+    page: int,
+    page_size: int,
+) -> IngestRecordPageResult:
+    """Fast path for compile-record tabs: jobs + ingest cache, no provider checkout scan."""
+    source_dir = local_source_root(project_dir)
+    cached = set(cache.keys())
+    job_paths = _job_source_paths(jobs)
+    changed = detect_changed_identities(source_dir, cache)
+
+    count_paths = list(
+        set(job_paths)
+        | {
+            str((source_dir / identity).resolve())
+            for identity in cached
+            if (source_dir / identity).is_file()
+        }
+    )
+    all_items = resolve_file_statuses(
+        source_paths=count_paths,
+        jobs=jobs,
+        changed_identities=changed,
+        cached_identities=cached,
+        source_root=str(source_dir),
+    )
+    counts = {key: 0 for key in ["processing", "queued", "failed", "updated", "not_queued", "compiled"]}
+    for item in all_items:
+        counts[item.status] = counts.get(item.status, 0) + 1
+
+    if status_filter in ("processing", "queued", "failed"):
+        page_source_paths = job_paths
+        page_changed: set[str] = set()
+    elif status_filter == "updated":
+        page_source_paths = [
+            str((source_dir / identity).resolve())
+            for identity in sorted(changed)
+            if (source_dir / identity).is_file()
+        ]
+        page_changed = changed
+    else:
+        page_source_paths = [
+            str((source_dir / identity).resolve())
+            for identity in sorted(cached)
+            if identity not in changed and (source_dir / identity).is_file()
+        ]
+        page_changed = changed
+
+    page_items = resolve_file_statuses(
+        source_paths=page_source_paths,
+        jobs=jobs,
+        changed_identities=page_changed,
+        cached_identities=cached,
+        source_root=str(source_dir),
+    )
+    page_items = [item for item in page_items if item.status == status_filter]
+    page_items = filter_and_sort_items(page_items, sort_dir=sort_dir)
+    page_data = paginate_items(page_items, page=page, page_size=page_size)
+    return IngestRecordPageResult(
+        items=page_data.items,
+        counts=counts,
+        total=page_data.total,
+        page=page_data.page,
+        page_size=page_data.page_size,
+    )
 
 
 def resolve_file_statuses(
