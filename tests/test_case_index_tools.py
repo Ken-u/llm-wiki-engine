@@ -216,11 +216,14 @@ def test_system_prompt_includes_case_search_policy():
     assert "read_ticket_case" in prompt
     assert "read_ticket_page" not in prompt
     assert "case_id" in prompt
+    assert "[[id]]" not in prompt
     assert "read_raw" in prompt
     assert "grep_raw" in prompt
     assert "session" in prompt
-    assert "[[caseid]]" in prompt
+    assert "[[case_id]]" in prompt
     assert "[[...]]" in prompt
+    assert "错误示例" in prompt
+    assert "case_558753" in prompt
 
 
 def test_system_prompt_no_ticket_has_no_case_policy():
@@ -231,3 +234,18 @@ def test_system_prompt_no_ticket_has_no_case_policy():
 def test_system_prompt_override_replaces_default_policy():
     prompt = _build_system_prompt("custom", has_ticket=True, override_prompt="override")
     assert prompt == "override"
+
+
+def test_read_ticket_case_normalizes_case_id(tmp_path):
+    proj = _make_project(tmp_path)
+    _write_manifest(str(tmp_path))
+    _write_cases_jsonl(str(tmp_path))
+    _write_case_source(str(tmp_path))
+    ctx = ToolContext(main_projects=[], ticket_project=proj)
+
+    result = asyncio.run(execute_tool(
+        "read_ticket_case", {"case_id": "case_5001"}, ctx
+    ))
+
+    assert result["source_type"] == "ticket_case_index"
+    assert result["case_id"] == "5001"

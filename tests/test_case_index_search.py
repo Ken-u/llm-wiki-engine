@@ -60,6 +60,47 @@ def _setup_and_build(tmp_path):
         asyncio.run(rebuild_case_index(str(tmp_path)))
 
 
+def _write_minimal_case_index(tmp_path):
+    idx = tmp_path / CASE_INDEX_DIR
+    idx.mkdir(parents=True, exist_ok=True)
+    manifest = CaseManifest(
+        status="ready",
+        built_at="2026-06-11T00:00:00Z",
+        source_count=1,
+        case_count=1,
+        chunk_count=3,
+        embedding_model="test",
+        embedding_dimensions=8,
+        errors=[],
+    )
+    (idx / "manifest.json").write_text(
+        json.dumps(manifest.to_dict(), ensure_ascii=False),
+        encoding="utf-8",
+    )
+    case = {
+        "case_id": "2001",
+        "ticket_id": "2001",
+        "title": "Boot Failure Case",
+        "domain": "android",
+        "tags": ["boot", "kernel"],
+        "source_path": "raw/sources/2001.md",
+        "updated_at": "",
+        "problem_summary": "设备无法正常启动，卡在开机动画。",
+        "root_cause": "内核 OOM killer 触发，杀死关键系统进程。",
+        "resolution": "调整 low memory killer 参数，增加系统保留内存。",
+        "diagnosis_steps": "",
+        "affected_modules": [],
+        "raw_text_hash": "abc",
+    }
+    (idx / "cases.jsonl").write_text(
+        json.dumps(case, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    src = tmp_path / "raw" / "sources"
+    src.mkdir(parents=True, exist_ok=True)
+    (src / "2001.md").write_text(SAMPLE_MD, encoding="utf-8")
+
+
 def test_search_cases_returns_structured_results(tmp_path):
     _setup_and_build(tmp_path)
 
@@ -157,4 +198,39 @@ def test_read_case_source_finds_nested_path(tmp_path):
 
     result = read_case_source(str(tmp_path), "606125")
     assert result is not None
+    assert "Boot Failure Case" in result["raw_content"]
+
+
+def test_normalize_case_id_strips_common_prefixes():
+    from app.case_index.search import normalize_case_id
+
+    assert normalize_case_id("123456") == "123456"
+    assert normalize_case_id("case123456") == "123456"
+    assert normalize_case_id("case_123456") == "123456"
+    assert normalize_case_id("case-123456") == "123456"
+    assert normalize_case_id("CASE-123456") == "123456"
+    assert normalize_case_id("CASE_123456") == "123456"
+    assert normalize_case_id("#123456") == "123456"
+    assert normalize_case_id("case #123456") == "123456"
+    assert normalize_case_id("  case123456  ") == "123456"
+    assert normalize_case_id(123456) == "123456"
+    assert normalize_case_id(None) == ""
+    assert normalize_case_id("not-a-case") == "not-a-case"
+    assert normalize_case_id("case") == "case"
+
+
+def test_read_case_normalizes_malformed_case_id(tmp_path):
+    _write_minimal_case_index(tmp_path)
+    result = read_case(str(tmp_path), "case_2001")
+    assert result is not None
+    assert result["case_id"] == "2001"
+
+
+def test_read_case_source_normalizes_malformed_case_id(tmp_path):
+    from app.case_index.search import read_case_source
+
+    _write_minimal_case_index(tmp_path)
+    result = read_case_source(str(tmp_path), "CASE-2001")
+    assert result is not None
+    assert result["case_id"] == "2001"
     assert "Boot Failure Case" in result["raw_content"]

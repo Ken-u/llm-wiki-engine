@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any
 import aiofiles
 
 from app.case_index.builder import load_manifest
-from app.case_index.search import search_cases, read_case
+from app.case_index.search import search_cases, read_case, normalize_case_id
 from app.search.bm25 import search_bm25
 from app.search.fusion import rrf_fusion
 from app.search.vector import search_vector
@@ -150,7 +150,7 @@ def get_tool_definitions(ctx: ToolContext) -> list[dict]:
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "case_id": {"type": "string", "description": "案例 ID"},
+                            "case_id": {"type": "string", "description": "案例 ID，必须是纯数字（如 558753），不要添加 case、case_、CASE-、# 等前缀"},
                             "section": {
                                 "type": "string",
                                 "description": "章节名，如'处理过程'、'最终处理方案'、'原因分析'。不传则返回全部章节摘要。",
@@ -379,7 +379,7 @@ async def execute_tool(name: str, arguments: dict, ctx: ToolContext) -> dict:
     if name == "read_ticket_case":
         if ctx.ticket_project is None:
             return {"error": "Ticket wiki not configured for this project."}
-        case_id = arguments.get("case_id", "")
+        case_id = normalize_case_id(arguments.get("case_id", ""))
         section = (
             arguments.get("section")
             or arguments.get("session")

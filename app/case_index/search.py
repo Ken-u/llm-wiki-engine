@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,6 +16,22 @@ logger = logging.getLogger(__name__)
 
 MAX_SNIPPET_CHARS = 200
 RRF_K = 60
+
+_CASE_ID_RE = re.compile(r"(?i)^[\s#]*(?:case)?[\s_\-#]*(\d+)[\s#]*$")
+
+
+def normalize_case_id(case_id: object) -> str:
+    """Normalize LLM-generated case ID variants to pure numeric digits.
+
+    Tolerates prefixes/suffixes such as case, case_, case-, CASE_, CASE-,
+    and optional leading/trailing '#' or whitespace.
+    """
+    if case_id is None:
+        return ""
+    if not isinstance(case_id, str):
+        case_id = str(case_id)
+    match = _CASE_ID_RE.match(case_id.strip())
+    return match.group(1) if match else case_id.strip()
 
 
 @dataclass
@@ -183,6 +200,7 @@ def read_case(
     )
     from app.wiki.frontmatter import parse_frontmatter
 
+    case_id = normalize_case_id(case_id)
     cases = _load_cases(project_dir)
     rec = cases.get(case_id)
     if rec is None:
@@ -232,6 +250,7 @@ def read_case(
 
 
 def _find_case_source_path(project_dir: str, case_id: str) -> Path | None:
+    case_id = normalize_case_id(case_id)
     cases = _load_cases(project_dir)
     rec = cases.get(case_id)
     if rec is not None:
@@ -250,6 +269,7 @@ def _find_case_source_path(project_dir: str, case_id: str) -> Path | None:
 
 def read_case_source(project_dir: str, case_id: str) -> dict | None:
     """Read case raw markdown source for UI preview."""
+    case_id = normalize_case_id(case_id)
     source_path = _find_case_source_path(project_dir, case_id)
     if source_path is None:
         return None

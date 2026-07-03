@@ -77,6 +77,8 @@ POST /api/search
 GET  /api/wiki
 GET  /api/wiki/{path}
 GET  /api/cases/{case_id}
+POST /api/cases/search
+POST /api/indexes/rebuild        # target: knowledge | cases | all
 GET  /v1/models
 POST /v1/chat/completions       # 支持 stream=true
 ```
@@ -255,7 +257,7 @@ POST  /api/projects/{id}/knowledge-api/regenerate-token
    
    慢路径复用项目的 knowledge Agent（自动创建），执行完整的 `search_wiki` → `read_wiki_page` → `grep_raw` 工具循环，最终将 Agent 生成的文本作为 `choices[0].message.content` 返回。
    
-   **关键约束**：慢路径始终设置 `include_ticket_project=False`，即使项目绑定了案例库也不暴露 `search_ticket_cases` / `read_ticket_page` 工具，防止与外部案例生成服务产出的案例形成循环引用。
+   **关键约束**：慢路径始终设置 `include_ticket_project=False`，即使项目绑定了案例库也不暴露 `search_ticket_cases` / `read_ticket_case` 工具，防止与外部案例生成服务产出的案例形成循环引用。
 
 #### 调用示例
 
@@ -279,14 +281,35 @@ curl -X POST "http://engine:8000/v1/chat/completions" \
 /api/admin/...                  # 系统配置（admin）
 ```
 
-### 主 Wiki 与案例库绑定
+### 案例库与 Case Index
 
-案例库不是独立的数据表，也不会混入主 wiki 的索引。它本质上是另一个普通 Project，通过主项目的 `ticket_project_id` 字段绑定：
+案例库使用一等项目类型 `case_library`，不会混入主 wiki 的普通搜索索引。它通过主项目的 `ticket_project_id` 字段绑定，并由专用 case index 提供结构化检索：
 
-- `Project.ticket_project_id` 指向另一个 `projects.id`，被指向的项目就是案例库。
+- 创建项目时可传 `as_case_library: true`；如同时传 `main_project_id`，会创建案例库并绑定到主项目。
+- `Project.ticket_project_id` 指向另一个 `project_type == "case_library"` 的项目。
 - owner 可通过 `PATCH /api/projects/{id}` 设置或清空 `ticket_project_id`。
 - 设置绑定时会校验当前用户也能访问目标案例项目。
-- 不允许项目绑定自己，也不允许案例库再绑定另一个案例库，避免递归链。
+- 不允许项目绑定自己，不允许知识库绑定普通知识库，也不允许案例库再绑定另一个案例库，避免递归链。
+- 案例库上传或 Git 同步后，可设置 `case_index_auto_rebuild` 自动重建索引；否则会标记为 stale，需手动重建。
+
+案例库索引 API：
+
+```
+GET  /api/projects/{id}/case-index/status
+POST /api/projects/{id}/case-index/rebuild
+POST /api/projects/{id}/case-index/rebuild/tasks
+GET  /api/projects/{id}/case-index/rebuild/tasks/current
+GET  /api/projects/{id}/case-index/rebuild/tasks/{task_id}
+POST /api/projects/{id}/case-index/search
+GET  /api/projects/{id}/case-index/cases/{case_id}
+```
+
+专用索引产物位于案例库项目目录的 `.llm-wiki/case-index/`：
+
+- `manifest.json`：索引状态、来源数量、案例数量、chunk 数、embedding 配置与错误摘要。
+- `cases.jsonl`：按案例存储 `case_id`、标题、领域、标签、问题摘要、根因、解决方案、处理步骤等结构化字段。
+- `keyword.sqlite`：FTS5 关键词索引。
+- `lancedb/case_chunks_v1`：案例章节 chunk 的向量索引。
 
 主 Agent 与案例库的运行时链路：
 
@@ -301,7 +324,7 @@ flowchart TD
     LoadTicket --> WithTicket["ToolContext<br/>main_projects + ticket_project"]
 
     MainOnly --> ToolDefsMain["暴露主 wiki 工具<br/>search_wiki<br/>read_wiki_page<br/>get_wiki_index<br/>get_project_purpose<br/>grep_raw/read_raw"]
-    WithTicket --> ToolDefsAll["暴露主 wiki 工具<br/>+ 案例库工具<br/>search_ticket_cases<br/>read_ticket_page"]
+    WithTicket --> ToolDefsAll["暴露主 wiki 工具<br/>+ 案例库工具<br/>search_ticket_cases<br/>read_ticket_case"]
 
     ToolDefsMain --> LLM["LLM 工具调用循环<br/>run_agent_turn"]
     ToolDefsAll --> LLM
@@ -311,9 +334,9 @@ flowchart TD
     MainHybrid --> ReadWiki["read_wiki_page<br/>读取主 wiki 页面全文"]
 
     LLM --> NeedCase{"问题涉及历史案例<br/>故障经验/类似 issue/处理先例?"}
-    NeedCase -- "是，且有 ticket_project" --> SearchTicket["search_ticket_cases<br/>搜索案例库 wiki"]
-    SearchTicket --> TicketHybrid["BM25 案例库 wiki/**/*.md<br/>+ 案例库 LanceDB<br/>+ RRF 融合"]
-    TicketHybrid --> ReadTicket["read_ticket_page<br/>读取案例页面全文"]
+    NeedCase -- "是，且有 ticket_project" --> SearchTicket["search_ticket_cases<br/>搜索专用案例索引"]
+    SearchTicket --> TicketHybrid["FTS5 keyword.sqlite<br/>+ LanceDB case_chunks_v1<br/>+ RRF 融合"]
+    TicketHybrid --> ReadTicket["read_ticket_case<br/>读取结构化案例详情或指定章节"]
     NeedCase -- "否或未绑定" --> Final
 
     ReadWiki --> Final["基于工具结果生成回答"]
@@ -329,8 +352,9 @@ Agent 回复问题时走工具调用链路：
 1. Agent 通过 `AgentProject` 取得可访问的主项目列表。
 2. `agent_toolcall_chat()` 从这些主项目中查找第一个已绑定的 `ticket_project_id`，加载对应案例库项目。
 3. 运行时构造 `ToolContext(main_projects=..., ticket_project=...)`。
-4. 如果 `ticket_project` 存在，才会向 LLM 暴露 `search_ticket_cases` 和 `read_ticket_page`。
+4. 如果 `ticket_project` 存在，才会向 LLM 暴露 `search_ticket_cases` 和 `read_ticket_case`。
 5. 系统提示词会引导模型：当问题涉及历史案例、具体故障经验、类似 issue、处理先例时，可主动调用 `search_ticket_cases`。
+6. 使用案例库作答时，案例引用必须使用工具返回的纯数字 ID，例如 `[[558753]]`；`read_ticket_case.case_id` 也会容忍并归一化 `case_558753`、`CASE-558753`、`#558753` 等常见 LLM 误写。
 
 `search_ticket_cases` 的实现逻辑：
 
@@ -339,34 +363,38 @@ if name == "search_ticket_cases":
     if ctx.ticket_project is None:
         return {"error": "Ticket wiki not configured for this project."}
     query = arguments.get("query", "")
-    limit = min(arguments.get("limit", 5), 10)
-    return await _do_search(ctx.ticket_project, query, limit, "ticket")
+    limit = min(arguments.get("limit", 3), 5)
+    manifest = load_manifest(ctx.ticket_project.disk_path)
+    if manifest is None or not manifest.is_ready:
+        return {"error": "Case index is not built or not ready. Rebuild the case index first."}
+    results = await search_cases(ctx.ticket_project.disk_path, query, limit=limit)
+    return {"source_type": "ticket_case_index", "results": results}
 ```
 
-它对案例库项目执行与主 wiki 相同的 hybrid search：
+它对案例库项目执行专用 hybrid search：
 
-- `search_bm25(project.disk_path, query, top_k=limit * 2)` 扫描案例库项目的 `wiki/**/*.md`。
-- `search_vector(project.disk_path, query, top_k=limit * 2)` 搜案例库项目自己的 `.llm-wiki/lancedb/wiki_chunks_v2`。
-- `rrf_fusion(kw, vec, query)` 融合 BM25 与向量结果。
-- 返回 `path`、`title`、`snippet`、`score`；当 `source_type == "ticket"` 时额外返回 `project_id` 和 `project_name`。
+- `keyword.sqlite` 的 FTS5 返回 `case_id`、匹配章节和 rank。
+- `lancedb/case_chunks_v1` 向量搜索返回 `case_id`、章节、chunk 文本和距离。
+- RRF 在案例级别融合关键词与向量结果。
+- 返回 `case_id`、`title`、`domain`、`problem_summary`、`root_cause`、`resolution`、`matched_sections`、`score`。
 
-`read_ticket_page` 的实现逻辑：
+`read_ticket_case` 的实现逻辑：
 
 ```python
-if name == "read_ticket_page":
+if name == "read_ticket_case":
     if ctx.ticket_project is None:
         return {"error": "Ticket wiki not configured for this project."}
-    page_path = arguments.get("path", "")
-    return await _do_read(ctx.ticket_project, page_path, "ticket")
+    case_id = normalize_case_id(arguments.get("case_id", ""))
+    section = arguments.get("section") or arguments.get("session") or arguments.get("section_name")
+    return read_case(ctx.ticket_project.disk_path, case_id, section=section)
 ```
 
-它从案例库项目磁盘目录读取指定 wiki 页面：
+它从 `cases.jsonl` 定位案例源文件，并返回 Agent 友好的结构化内容：
 
-- 拒绝包含 `..` 或以 `/` 开头的路径，避免越权读文件。
-- 实际读取路径为 `Path(ctx.ticket_project.disk_path) / page_path`。
-- 返回内容最多截断到 `MAX_PAGE_CHARS = 12000`。
-- 从页面前 10 行解析 `# Heading` 或 `title:` 作为标题。
-- 返回 `source_type: "ticket"`、`path`、`title`、`content`。
+- 不返回本地 `source_path` 或 `raw_text_hash`，避免模型继续读取 raw 文件。
+- 不传 `section` 时返回可用章节列表和章节摘要字典。
+- 传 `section` 时按章节名模糊匹配，并返回最多 6000 字的该章节内容。
+- `section` 兼容旧误写参数 `session` 和 `section_name`。
 
 因此，主 wiki Agent 并不是后端自动把案例库内容拼进 prompt，而是根据绑定关系额外暴露案例库工具；是否搜索案例库由 LLM 在工具循环中决定。例外是 `/v1/chat/completions` 知识检索 API：慢路径会显式禁用案例库工具（`include_ticket_project=False`），防止案例生成流程形成循环引用。
 
@@ -378,7 +406,7 @@ if name == "read_ticket_page":
 purpose.md
 raw/sources/          # 原始文档（上传 / Git 同步）
 wiki/                 # 编译产物
-.llm-wiki/            # ingest-cache、LanceDB、checkpoints 等
+.llm-wiki/            # ingest-cache、LanceDB、checkpoints、case-index 等
 ```
 
 ## 测试
@@ -412,7 +440,9 @@ llm-wiki-engine/
     ├── wiki/
     ├── chat/
     ├── agents/
+    ├── case_index/         # 案例库解析、索引构建、搜索与读取 API
     ├── knowledge/          # 知识检索（快路径 + 慢路径编排）
+    ├── runtime/            # 单知识库只读 Runtime API、配置、静态 UI
     ├── openai_compat/      # /v1/ OpenAI 兼容端点
     ├── feedback/
     ├── admin/

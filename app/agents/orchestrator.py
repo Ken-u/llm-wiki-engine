@@ -60,7 +60,9 @@ def _build_system_prompt(custom_prompt: str, has_ticket: bool, override_prompt: 
             "- 搜索案例后，优先基于候选摘要（problem_summary、root_cause、resolution）直接回答。",
             "- 只有需要具体排查步骤、日志、完整上下文时才调用 read_ticket_case。",
             "- 不要一次读取多个案例全文。",
-            "- 使用案例库时，回答中引用案例必须使用 [[caseid]] 格式，并在必要时补充 title。",
+            "- 使用案例库时，回答中引用案例必须使用 [[case_id]] 格式，其中 case_id 为工具返回的纯数字案例 ID。",
+            "- 正确示例：[[558753]]；错误示例：[[case558753]]、[[case_558753]]、[[CASE-558753]]、[[#558753]]。",
+            "- 调用 read_ticket_case 时，case_id 参数必须为纯数字，不得添加 case、case_、CASE-、# 等前缀。",
             "- 案例内容只能通过 search_ticket_cases 和 read_ticket_case 获取。",
             "- 禁止对案例库文件使用 read_raw、grep_raw、read_wiki_page。",
             "- read_ticket_case 返回的字段中不包含本地文件路径，不要尝试读取案例 raw 源文件。",
@@ -78,7 +80,7 @@ def _build_system_prompt(custom_prompt: str, has_ticket: bool, override_prompt: 
         "- 不要猜测答案，始终基于工具返回的知识库内容回答。",
         f"{ticket_policy}",
         "- 凡是参考任意知识库或案例库内容得出的事实、结论、步骤或建议，都必须在对应句子附近使用 [[...]] 标注引用。",
-        "- 知识库引用使用 [[wiki/path-or-page-name]] 或工具返回的页面 path/title；案例库引用使用 [[caseid]]。",
+        "- 知识库引用使用 [[wiki/path-or-page-name]] 或工具返回的页面 path/title；案例库引用使用 [[case_id]]，例如 [[558753]]。",
         "- 如果知识库中没有找到相关信息，请如实说明。",
     ])
 
