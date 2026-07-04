@@ -119,6 +119,4 @@ async def get_source_repository_or_404(
     ).scalar_one_or_none()
     if repo is not None:
         return repo
-    if key == DEFAULT_SOURCE_REPO_KEY:
-        return await create_default_source_repository(db, project)
     raise HTTPException(status.HTTP_404_NOT_FOUND, "Source repository not found")
