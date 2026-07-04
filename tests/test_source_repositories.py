@@ -111,6 +111,31 @@ def test_source_repository_crud_api_hides_auth_and_enforces_owner_permissions(tm
                 assert listed[0]["auth_configured"] is True
                 assert "auth_token" not in listed[0]
 
+                clear_token_resp = await client.patch(
+                    f"/api/projects/project-1/source-repositories/{created['id']}",
+                    json={"clear_auth_token": True},
+                )
+                assert clear_token_resp.status_code == 200
+                assert clear_token_resp.json()["auth_configured"] is False
+
+                get_after_clear_resp = await client.get("/api/projects/project-1/source-repositories")
+                assert get_after_clear_resp.status_code == 200
+                assert get_after_clear_resp.json()[0]["auth_configured"] is False
+
+                set_token_resp = await client.patch(
+                    f"/api/projects/project-1/source-repositories/{created['id']}",
+                    json={"auth_token": "new-secret-token"},
+                )
+                assert set_token_resp.status_code == 200
+                assert set_token_resp.json()["auth_configured"] is True
+
+                empty_token_resp = await client.patch(
+                    f"/api/projects/project-1/source-repositories/{created['id']}",
+                    json={"auth_token": ""},
+                )
+                assert empty_token_resp.status_code == 200
+                assert empty_token_resp.json()["auth_configured"] is True
+
                 current_user = viewer
                 viewer_list_resp = await client.get("/api/projects/project-1/source-repositories")
                 assert viewer_list_resp.status_code == 200

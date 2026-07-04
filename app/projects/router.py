@@ -115,6 +115,7 @@ class SourceRepositoryUpdateRequest(BaseModel):
     branch: str | None = None
     username: str | None = None
     auth_token: str | None = None
+    clear_auth_token: bool | None = None
     author_name: str | None = None
     author_email: str | None = None
     sync_enabled: bool | None = None
@@ -453,7 +454,12 @@ async def update_project_source_repository(
     await service.check_membership(db, project_id, user, require="owner")
     proj = await service.get_project_or_404(db, project_id)
     repo = await source_repo_service.get_source_repository_or_404(db, proj, repo_id)
-    repo = await source_repo_service.update_source_repository(db, repo, **body.model_dump(exclude_unset=True))
+    kwargs = body.model_dump(exclude_unset=True, exclude={"clear_auth_token", "auth_token"})
+    if "auth_token" in body.model_fields_set and body.auth_token:
+        kwargs["auth_token"] = body.auth_token
+    if "clear_auth_token" in body.model_fields_set and body.clear_auth_token:
+        kwargs["auth_token"] = ""
+    repo = await source_repo_service.update_source_repository(db, repo, **kwargs)
     return _build_source_repository_response(repo)
 
 
