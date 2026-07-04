@@ -275,16 +275,16 @@ async def _migrate_legacy_git_config_to_source_repositories(conn) -> None:
                 inferred_names.repo_name,
                 p.git_repo_url,
                 COALESCE(NULLIF(p.git_branch, ''), 'main'),
-                p.git_username,
-                p.git_auth_token,
-                p.git_author_name,
-                p.git_author_email,
-                p.git_sync_enabled,
-                p.git_sync_auto_compile,
+                COALESCE(p.git_username, ''),
+                COALESCE(p.git_auth_token, ''),
+                COALESCE(p.git_author_name, ''),
+                COALESCE(p.git_author_email, ''),
+                COALESCE(p.git_sync_enabled, 0),
+                COALESCE(p.git_sync_auto_compile, 0),
                 COALESCE(NULLIF(p.git_sync_time, ''), '02:00'),
                 p.last_git_sync_at,
                 COALESCE(NULLIF(p.last_git_sync_status, ''), 'idle'),
-                p.last_git_sync_error
+                COALESCE(p.last_git_sync_error, '')
             FROM legacy_projects p
             JOIN inferred_names ON inferred_names.project_id = p.id
         """)

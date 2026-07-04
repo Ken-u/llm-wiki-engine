@@ -60,6 +60,17 @@ def test_auto_migrate_moves_legacy_git_config_to_publish_config(tmp_path):
                     '', '', 0, 0, 'idle', ''
                 )
             """))
+            await conn.execute(text("""
+                INSERT INTO projects (
+                    id, git_repo_url, git_branch, git_username, git_auth_token,
+                    git_author_name, git_author_email, git_sync_enabled,
+                    git_sync_auto_compile, git_sync_time, last_git_sync_status, last_git_sync_error
+                )
+                VALUES (
+                    'p3', 'https://git.example.com/org/nulls.git', NULL, NULL, NULL,
+                    NULL, NULL, NULL, NULL, NULL, NULL, NULL
+                )
+            """))
             await _auto_migrate(conn)
             await _auto_migrate(conn)
             row = (await conn.execute(text("""
@@ -94,10 +105,18 @@ def test_auto_migrate_moves_legacy_git_config_to_publish_config(tmp_path):
                 FROM project_source_repositories
                 WHERE project_id = 'p2' AND key = 'default'
             """))).scalar_one()
+            null_source_repo = (await conn.execute(text("""
+                SELECT
+                    name, repo_url, branch, username, auth_token, author_name,
+                    author_email, sync_enabled, auto_compile, sync_time,
+                    last_sync_status, last_sync_error
+                FROM project_source_repositories
+                WHERE project_id = 'p3' AND key = 'default'
+            """))).mappings().one()
         await engine.dispose()
-        return row, marker, source_marker, source_repo, source_repo_count, ssh_source_repo_name
+        return row, marker, source_marker, source_repo, source_repo_count, ssh_source_repo_name, null_source_repo
 
-    row, marker, source_marker, source_repo, source_repo_count, ssh_source_repo_name = asyncio.run(run())
+    row, marker, source_marker, source_repo, source_repo_count, ssh_source_repo_name, null_source_repo = asyncio.run(run())
 
     assert row["publish_repo_url"] == "https://git.example.com/org/docs.git"
     assert row["publish_branch"] == "master"
@@ -131,3 +150,15 @@ def test_auto_migrate_moves_legacy_git_config_to_publish_config(tmp_path):
     assert source_repo["last_sync_error"] == "old error"
     assert source_repo_count == 1
     assert ssh_source_repo_name == "backend-docs"
+    assert null_source_repo["name"] == "nulls"
+    assert null_source_repo["repo_url"] == "https://git.example.com/org/nulls.git"
+    assert null_source_repo["branch"] == "main"
+    assert null_source_repo["username"] == ""
+    assert null_source_repo["auth_token"] == ""
+    assert null_source_repo["author_name"] == ""
+    assert null_source_repo["author_email"] == ""
+    assert null_source_repo["sync_enabled"] == 0
+    assert null_source_repo["auto_compile"] == 0
+    assert null_source_repo["sync_time"] == "02:00"
+    assert null_source_repo["last_sync_status"] == "idle"
+    assert null_source_repo["last_sync_error"] == ""
