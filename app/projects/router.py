@@ -266,6 +266,15 @@ def _project_for_publish_test(project: Project, body: TestPublishConnectionReque
     )
 
 
+def _source_repo_for_git_test(repo, body: TestGitConnectionRequest | None):
+    return SimpleNamespace(
+        repo_url=body.git_repo_url if body and body.git_repo_url is not None else repo.repo_url,
+        branch=body.git_branch if body and body.git_branch is not None else repo.branch,
+        username=body.git_username if body and body.git_username is not None else repo.username,
+        auth_token=body.git_auth_token if body and body.git_auth_token is not None else repo.auth_token,
+    )
+
+
 @router.post("", response_model=ProjectResponse, status_code=status.HTTP_201_CREATED)
 async def create_project(
     body: CreateProjectRequest,
@@ -460,6 +469,11 @@ async def update_project_source_repository(
     if "clear_auth_token" in body.model_fields_set and body.clear_auth_token:
         kwargs["auth_token"] = ""
     repo = await source_repo_service.update_source_repository(db, repo, **kwargs)
+    schedule_fields = {"sync_enabled", "sync_time"}
+    if schedule_fields & body.model_fields_set:
+        from app.projects.git_sync import register_sync_jobs
+        import asyncio
+        asyncio.create_task(register_sync_jobs())
     return _build_source_repository_response(repo)
 
 
@@ -473,6 +487,63 @@ async def delete_project_source_repository(
     await service.check_membership(db, project_id, user, require="owner")
     proj = await service.get_project_or_404(db, project_id)
     await source_repo_service.delete_source_repository(db, proj, repo_id)
+
+
+@router.post("/{project_id}/source-repositories/{repo_id}/test")
+async def test_source_repository_git_connection(
+    project_id: str,
+    repo_id: str,
+    body: TestGitConnectionRequest | None = None,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await service.check_membership(db, project_id, user, require="owner")
+    proj = await service.get_project_or_404(db, project_id)
+    repo = await source_repo_service.get_source_repository_or_404(db, proj, repo_id)
+    from app.projects.git_sync import test_source_repository_git_connection as test_connection
+    return await test_connection(proj, _source_repo_for_git_test(repo, body))
+
+
+@router.post("/{project_id}/source-repositories/{repo_id}/sync")
+async def trigger_source_repository_sync(
+    project_id: str,
+    repo_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    import asyncio
+    await service.check_membership(db, project_id, user, require="owner")
+    proj = await service.get_project_or_404(db, project_id)
+    repo = await source_repo_service.get_source_repository_or_404(db, proj, repo_id)
+    if not repo.repo_url:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "未配置 Git 仓库")
+    if not repo.auth_token:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "未配置 Git 访问凭证")
+    from app.projects.git_sync import sync_source_repository, _get_sync_lock
+    lock = _get_sync_lock(f"{project_id}:{repo_id}")
+    if lock.locked():
+        raise HTTPException(status.HTTP_409_CONFLICT, "该项目已有同步正在执行")
+    asyncio.create_task(sync_source_repository(project_id, repo_id, triggered_by=user.id, source="manual"))
+    return {"status": "started"}
+
+
+@router.post("/{project_id}/source-repositories/sync-all")
+async def trigger_all_source_repositories_sync(
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    import asyncio
+    await service.check_membership(db, project_id, user, require="owner")
+    proj = await service.get_project_or_404(db, project_id)
+    repos = await source_repo_service.list_source_repositories(db, proj)
+    if any(not repo.repo_url for repo in repos):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "存在未配置 Git 仓库的源仓库")
+    if any(not repo.auth_token for repo in repos):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "存在未配置 Git 访问凭证的源仓库")
+    from app.projects.git_sync import sync_all_source_repositories
+    asyncio.create_task(sync_all_source_repositories(project_id, triggered_by=user.id, source="manual"))
+    return {"status": "started"}
 
 
 @router.post("/{project_id}/git/test")

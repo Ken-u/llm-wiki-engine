@@ -44,6 +44,7 @@ if "apscheduler" not in sys.modules:
 from app.projects import git_sync
 from app.projects.git_sync import _commit_and_publish, _ensure_repo, _inject_auth
 from app.ingest.files import provider_source_root
+from app.projects.source_repositories import source_repo_checkout_root
 
 
 def test_inject_auth_with_token():
@@ -109,6 +110,129 @@ def test_ensure_repo_empty_remote_creates_target_branch(tmp_path):
 
     head = (provider_source_root(project.disk_path) / ".git" / "HEAD").read_text(encoding="utf-8").strip()
     assert head == "ref: refs/heads/main"
+
+
+def test_ensure_repo_source_repository_uses_multi_source_checkout_root(tmp_path, monkeypatch):
+    project = SimpleNamespace(
+        disk_path=str(tmp_path / "worktree"),
+    )
+    source_repo = SimpleNamespace(
+        key="frontend-docs",
+        repo_url="https://git.example.com/org/frontend-docs.git",
+        auth_token="secret",
+        username="bot",
+        branch="main",
+    )
+    calls = []
+
+    class Result:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run_git(args, *, cwd=None, check=True):
+        calls.append((args, cwd))
+        if args[:1] == ["clone"]:
+            root = Path(args[-1])
+            (root / ".git").mkdir(parents=True, exist_ok=True)
+            (root / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+        return Result()
+
+    monkeypatch.setattr(git_sync, "_run_git", fake_run_git)
+
+    _ensure_repo(project, source_repo)
+
+    clone_target = Path(calls[0][0][-1])
+    assert clone_target == source_repo_checkout_root(project, source_repo)
+    assert clone_target.as_posix().endswith(".llm-wiki/source-repos/frontend-docs")
+
+
+def test_source_repository_sync_lock_uses_project_and_repo_id(monkeypatch):
+    seen_keys = []
+
+    class Lock:
+        def locked(self):
+            return True
+
+    def fake_get_sync_lock(key):
+        seen_keys.append(key)
+        return Lock()
+
+    monkeypatch.setattr(git_sync, "_get_sync_lock", fake_get_sync_lock)
+
+    async def run():
+        try:
+            await git_sync.sync_source_repository("project-1", "repo-1", triggered_by=1)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("sync_source_repository should reject a locked repo sync")
+
+    import asyncio
+
+    asyncio.run(run())
+    assert seen_keys == ["project-1:repo-1"]
+
+
+def test_register_sync_jobs_uses_source_repository_job_ids(tmp_path, monkeypatch):
+    async def run():
+        from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+        from app.agents.models import Agent  # noqa: F401
+        from app.auth.models import User
+        from app.database import Base
+        from app.projects.models import Project, ProjectSourceRepository
+
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'scheduler.db'}")
+        Session = async_sessionmaker(engine, expire_on_commit=False)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        async with Session() as db:
+            db.add(User(id=1, username="owner", password_hash="x", role="user"))
+            db.add(Project(id="project-1", name="Project", slug="project", description="", created_by=1))
+            db.add_all([
+                ProjectSourceRepository(
+                    id="repo-1",
+                    project_id="project-1",
+                    key="docs",
+                    name="Docs",
+                    repo_url="https://git.example.com/org/docs.git",
+                    sync_enabled=True,
+                    sync_time="04:20",
+                ),
+                ProjectSourceRepository(
+                    id="repo-2",
+                    project_id="project-1",
+                    key="disabled",
+                    name="Disabled",
+                    repo_url="https://git.example.com/org/disabled.git",
+                    sync_enabled=False,
+                    sync_time="05:30",
+                ),
+            ])
+            await db.commit()
+
+        added_jobs = []
+
+        class Scheduler:
+            def remove_all_jobs(self):
+                added_jobs.clear()
+
+            def add_job(self, func, *, trigger, args, id, replace_existing):
+                added_jobs.append((func, args, id, replace_existing))
+
+        monkeypatch.setattr(git_sync, "async_session", Session)
+        monkeypatch.setattr(git_sync, "_scheduler", Scheduler())
+
+        await git_sync.register_sync_jobs()
+
+        assert added_jobs == [(git_sync._scheduled_sync_job, ["project-1", "repo-1"], "git_sync_project-1_repo-1", True)]
+        await engine.dispose()
+
+    import asyncio
+
+    asyncio.run(run())
 
 
 def test_ensure_repo_remote_default_branch_differs_from_target_branch(tmp_path):

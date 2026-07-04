@@ -15,10 +15,16 @@ from sqlalchemy import select, update
 from app.database import async_session
 from app.documents.parser import parse_document
 from app.ingest.cache import check_cache
-from app.ingest.files import list_project_source_files, provider_source_root
+from app.ingest.files import provider_source_root
 from app.ingest.models import IngestJob
 from app.ingest.queue import ingest_queue
-from app.projects.models import Project
+from app.projects.models import Project, ProjectSourceRepository
+from app.projects.source_repositories import (
+    DEFAULT_SOURCE_REPO_KEY,
+    create_default_source_repository,
+    list_source_repositories,
+    source_repo_checkout_root,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -105,11 +111,22 @@ def _ensure_branch_checkout(root: Path, branch: str) -> None:
     raise RuntimeError(f"failed to checkout branch '{branch}': {detail}")
 
 
-def _ensure_repo(project: Project) -> None:
-    """Clone or update the git working copy at project.disk_path."""
-    root = provider_source_root(project.disk_path)
-    authed_url = _inject_auth(project.git_repo_url, project.git_auth_token, username=project.git_username)
-    branch = project.git_branch or "main"
+def _ensure_repo(project: Project, source_repo: ProjectSourceRepository | None = None) -> None:
+    """Clone or update the git working copy for a project or source repo."""
+    if source_repo is None:
+        root = provider_source_root(project.disk_path)
+        repo_url = project.git_repo_url
+        auth_token = project.git_auth_token
+        username = project.git_username
+        branch = project.git_branch or "main"
+    else:
+        root = source_repo_checkout_root(project, source_repo)
+        repo_url = source_repo.repo_url
+        auth_token = source_repo.auth_token
+        username = source_repo.username
+        branch = source_repo.branch or "main"
+
+    authed_url = _inject_auth(repo_url, auth_token, username=username)
 
     if not (root / ".git").exists():
         root.mkdir(parents=True, exist_ok=True)
@@ -123,7 +140,7 @@ def _ensure_repo(project: Project) -> None:
             root.mkdir(parents=True, exist_ok=True)
             _run_git(["clone", authed_url, str(root)])
         _ensure_branch_checkout(root, branch)
-        logger.info("Cloned provider %s (%s) -> %s", project.git_repo_url, branch, root)
+        logger.info("Cloned provider %s (%s) -> %s", repo_url, branch, root)
     else:
         _run_git(["remote", "set-url", "origin", authed_url], cwd=str(root))
         fetch_result = _run_git(["fetch", "origin", branch], cwd=str(root), check=False)
@@ -256,8 +273,28 @@ async def test_project_git_connection(project: Project) -> dict:
     if not project.git_auth_token:
         return {"ok": False, "error": "未配置访问凭证"}
 
-    authed_url = _inject_auth(project.git_repo_url, project.git_auth_token, username=project.git_username)
-    branch = project.git_branch or "main"
+    source_repo = ProjectSourceRepository(
+        id="legacy-test",
+        project_id=getattr(project, "id", ""),
+        key=DEFAULT_SOURCE_REPO_KEY,
+        name=DEFAULT_SOURCE_REPO_KEY,
+        repo_url=project.git_repo_url,
+        branch=project.git_branch or "main",
+        username=project.git_username,
+        auth_token=project.git_auth_token,
+    )
+    return await test_source_repository_git_connection(project, source_repo)
+
+
+async def test_source_repository_git_connection(project: Project, source_repo: ProjectSourceRepository) -> dict:
+    """Test source repository git connectivity."""
+    if not source_repo.repo_url:
+        return {"ok": False, "error": "未配置仓库 URL"}
+    if not source_repo.auth_token:
+        return {"ok": False, "error": "未配置访问凭证"}
+
+    authed_url = _inject_auth(source_repo.repo_url, source_repo.auth_token, username=source_repo.username)
+    branch = source_repo.branch or "main"
 
     loop = asyncio.get_event_loop()
     try:
@@ -349,14 +386,29 @@ async def publish_project_to_git(project_id: str, *, triggered_by: int = 0) -> N
             raise
 
 
-async def sync_project_from_git(
+def _list_source_files_under(source_root: Path) -> list[Path]:
+    if not source_root.exists():
+        return []
+    from app.ingest.files import is_project_source_file
+
+    return sorted(
+        [
+            path for path in source_root.rglob("*")
+            if is_project_source_file(path, source_root)
+        ],
+        key=lambda path: path.resolve().relative_to(source_root.resolve()).as_posix().lower(),
+    )
+
+
+async def sync_source_repository(
     project_id: str,
+    repo_id: str,
     *,
     triggered_by: int = 0,
     source: str = "manual",
-) -> None:
-    """Execute a full git sync cycle for a project."""
-    lock = _get_sync_lock(project_id)
+) -> dict:
+    """Execute a git sync cycle for one source repository."""
+    lock = _get_sync_lock(f"{project_id}:{repo_id}")
     if lock.locked():
         raise RuntimeError("该项目已有同步正在执行")
 
@@ -368,22 +420,33 @@ async def sync_project_from_git(
             if not project:
                 raise RuntimeError(f"Project {project_id} not found")
 
-            if not project.git_repo_url or not project.git_auth_token:
+            source_repo = (await db.execute(
+                select(ProjectSourceRepository).where(
+                    ProjectSourceRepository.project_id == project_id,
+                    ProjectSourceRepository.id == repo_id,
+                )
+            )).scalar_one_or_none()
+            if not source_repo:
+                raise RuntimeError(f"Source repository {repo_id} not found")
+
+            if not source_repo.repo_url or not source_repo.auth_token:
                 raise RuntimeError("Git 配置不完整")
 
-            project.last_git_sync_status = "syncing"
-            project.last_git_sync_error = ""
+            source_repo.last_sync_status = "syncing"
+            source_repo.last_sync_error = ""
+            if source_repo.key == DEFAULT_SOURCE_REPO_KEY:
+                project.last_git_sync_status = "syncing"
+                project.last_git_sync_error = ""
             await db.commit()
 
         try:
             loop = asyncio.get_event_loop()
 
             # Pull
-            await loop.run_in_executor(None, lambda: _ensure_repo(project))
+            await loop.run_in_executor(None, lambda: _ensure_repo(project, source_repo))
 
-            # Enumerate source files. Prefer populated raw/sources for legacy
-            # projects, otherwise treat the synced repository as the source tree.
-            source_root, source_files = list_project_source_files(project.disk_path)
+            source_root = source_repo_checkout_root(project, source_repo)
+            source_files = _list_source_files_under(source_root)
 
             if not source_files:
                 logger.info("No source files found for project %s", project_id)
@@ -439,34 +502,96 @@ async def sync_project_from_git(
             if failed_jobs:
                 raise RuntimeError(f"{len(failed_jobs)} 个编译任务失败")
 
-            # Mark success
             async with async_session() as db:
+                now = datetime.now(timezone.utc)
                 await db.execute(
-                    update(Project)
-                    .where(Project.id == project_id)
+                    update(ProjectSourceRepository)
+                    .where(ProjectSourceRepository.id == repo_id)
                     .values(
-                        last_git_sync_at=datetime.now(timezone.utc),
-                        last_git_sync_status="success",
-                        last_git_sync_error="",
+                        last_sync_at=now,
+                        last_sync_status="success",
+                        last_sync_error="",
                     )
                 )
+                if source_repo.key == DEFAULT_SOURCE_REPO_KEY:
+                    await db.execute(
+                        update(Project)
+                        .where(Project.id == project_id)
+                        .values(
+                            last_git_sync_at=now,
+                            last_git_sync_status="success",
+                            last_git_sync_error="",
+                        )
+                    )
                 await db.commit()
 
-            logger.info("Git sync completed for project %s (source=%s)", project_id, source)
+            logger.info("Git sync completed for project %s repo %s (source=%s)", project_id, repo_id, source)
+            return {"repo_id": repo_id, "status": "success", "error": ""}
 
         except Exception as exc:
-            logger.exception("Git sync failed for project %s", project_id)
+            logger.exception("Git sync failed for project %s repo %s", project_id, repo_id)
             async with async_session() as db:
                 await db.execute(
-                    update(Project)
-                    .where(Project.id == project_id)
+                    update(ProjectSourceRepository)
+                    .where(ProjectSourceRepository.id == repo_id)
                     .values(
-                        last_git_sync_status="failed",
-                        last_git_sync_error=str(exc)[:500],
+                        last_sync_status="failed",
+                        last_sync_error=str(exc)[:500],
                     )
                 )
+                if source_repo.key == DEFAULT_SOURCE_REPO_KEY:
+                    await db.execute(
+                        update(Project)
+                        .where(Project.id == project_id)
+                        .values(
+                            last_git_sync_status="failed",
+                            last_git_sync_error=str(exc)[:500],
+                        )
+                    )
                 await db.commit()
             raise
+
+
+async def sync_all_source_repositories(
+    project_id: str,
+    *,
+    triggered_by: int = 0,
+    source: str = "manual",
+) -> list[dict]:
+    """Sync all source repositories for a project, recording per-repo results."""
+    async with async_session() as db:
+        project = (await db.execute(select(Project).where(Project.id == project_id))).scalar_one_or_none()
+        if not project:
+            raise RuntimeError(f"Project {project_id} not found")
+        repos = await list_source_repositories(db, project)
+
+    results = []
+    for repo in repos:
+        try:
+            results.append(await sync_source_repository(project_id, repo.id, triggered_by=triggered_by, source=source))
+        except Exception as exc:
+            results.append({"repo_id": repo.id, "status": "failed", "error": str(exc)[:500]})
+    return results
+
+
+async def sync_project_from_git(
+    project_id: str,
+    *,
+    triggered_by: int = 0,
+    source: str = "manual",
+) -> None:
+    """Compatibility wrapper syncing the default source repository."""
+    async with async_session() as db:
+        project = (await db.execute(
+            select(Project).where(Project.id == project_id)
+        )).scalar_one_or_none()
+        if not project:
+            raise RuntimeError(f"Project {project_id} not found")
+        if not project.git_repo_url or not project.git_auth_token:
+            raise RuntimeError("Git 配置不完整")
+        source_repo = await create_default_source_repository(db, project)
+
+    await sync_source_repository(project_id, source_repo.id, triggered_by=triggered_by, source=source)
 
 
 async def _wait_for_jobs(job_ids: list[str], timeout: float = 3600) -> None:
@@ -503,23 +628,30 @@ from apscheduler.triggers.cron import CronTrigger  # noqa: E402
 _scheduler = AsyncIOScheduler()
 
 
-async def _scheduled_sync_job(project_id: str) -> None:
+async def _scheduled_sync_job(project_id: str, repo_id: str | None = None) -> None:
     """Wrapper for scheduled execution."""
     try:
-        await sync_project_from_git(project_id, triggered_by=0, source="schedule")
+        if repo_id:
+            await sync_source_repository(project_id, repo_id, triggered_by=0, source="schedule")
+        else:
+            await sync_project_from_git(project_id, triggered_by=0, source="schedule")
     except Exception:
-        logger.exception("Scheduled sync failed for project %s", project_id)
+        logger.exception("Scheduled sync failed for project %s repo %s", project_id, repo_id or "default")
 
 
 async def register_sync_jobs() -> None:
-    """Load all git-sync-enabled projects and register cron jobs."""
+    """Load all source-repo-sync-enabled repositories and register cron jobs."""
     _scheduler.remove_all_jobs()
     async with async_session() as db:
-        stmt = select(Project).where(Project.git_sync_enabled == True)  # noqa: E712
-        projects = list((await db.execute(stmt)).scalars().all())
+        stmt = (
+            select(Project, ProjectSourceRepository)
+            .join(ProjectSourceRepository, ProjectSourceRepository.project_id == Project.id)
+            .where(ProjectSourceRepository.sync_enabled == True)  # noqa: E712
+        )
+        rows = list((await db.execute(stmt)).all())
 
-    for proj in projects:
-        trigger_time = proj.git_sync_time or "02:00"
+    for proj, repo in rows:
+        trigger_time = repo.sync_time or "02:00"
         parts = trigger_time.split(":")
         hour = int(parts[0]) if len(parts) > 0 else 2
         minute = int(parts[1]) if len(parts) > 1 else 0
@@ -527,11 +659,17 @@ async def register_sync_jobs() -> None:
         _scheduler.add_job(
             _scheduled_sync_job,
             trigger=trigger,
-            args=[proj.id],
-            id=f"git_sync_{proj.id}",
+            args=[proj.id, repo.id],
+            id=f"git_sync_{proj.id}_{repo.id}",
             replace_existing=True,
         )
-        logger.info("Registered git sync for project '%s' at %02d:%02d", proj.name, hour, minute)
+        logger.info(
+            "Registered git sync for project '%s' source repo '%s' at %02d:%02d",
+            proj.name,
+            repo.key,
+            hour,
+            minute,
+        )
 
 
 def start_sync_scheduler() -> None:
