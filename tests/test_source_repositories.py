@@ -230,6 +230,8 @@ def test_source_repository_create_enabled_and_delete_refresh_sync_jobs(monkeypat
                 last_sync_at=None,
                 last_sync_status="idle",
                 last_sync_error="",
+                manual_git_mode=False,
+                sync_enabled_before_manual=False,
                 created_at=None,
                 updated_at=None,
             )
