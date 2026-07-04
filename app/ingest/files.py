@@ -38,6 +38,10 @@ class IngestFileItem:
     source_file: str
     source_path: str
     status: IngestFileStatus
+    file_size: int | None = None
+    source_repo_id: str | None = None
+    source_repo_key: str | None = None
+    source_repo_name: str | None = None
     job_id: str | None = None
     job_status: str | None = None
     progress: str = ""
@@ -55,6 +59,23 @@ class IngestFilePage:
     total: int = 0
     page: int = 1
     page_size: int = 10
+
+
+@dataclass
+class SourceDirectoryEntry:
+    name: str
+    path: str
+    source_repo_id: str | None = None
+    source_repo_key: str | None = None
+    source_repo_name: str | None = None
+    kind: str = "directory"
+
+
+@dataclass
+class SourceRepoMetadata:
+    id: str
+    key: str
+    name: str
 
 
 @dataclass
@@ -131,6 +152,75 @@ def list_project_source_files(project_dir: str) -> tuple[Path, list[Path]]:
     )
 
 
+def raw_source_root(project_dir: str) -> Path:
+    return Path(project_dir) / "raw" / "sources"
+
+
+def list_source_tree(
+    source_root: Path,
+    *,
+    dir_path: str = "",
+    recursive: bool = False,
+    source_repo: SourceRepoMetadata | None = None,
+) -> tuple[list[SourceDirectoryEntry], list[IngestFileItem]]:
+    root = source_root.resolve()
+    normalized_dir = dir_path.strip().replace("\\", "/")
+    if normalized_dir in (".", "/"):
+        normalized_dir = ""
+    if normalized_dir.startswith("/") or normalized_dir.startswith("../") or "/../" in normalized_dir:
+        raise ValueError(f"Invalid directory: {dir_path}")
+
+    current = (root / normalized_dir).resolve()
+    try:
+        current.relative_to(root)
+    except ValueError:
+        raise ValueError(f"Invalid directory: {dir_path}") from None
+    if not current.exists():
+        return [], []
+    if not current.is_dir():
+        raise ValueError(f"Invalid directory: {dir_path}")
+
+    directories: list[SourceDirectoryEntry] = []
+    if not recursive:
+        for child in current.iterdir():
+            if not child.is_dir() or child.name.startswith("."):
+                continue
+            rel = child.resolve().relative_to(root).as_posix()
+            if any(part in _EXCLUDED_REPO_SOURCE_DIRS for part in Path(rel).parts):
+                continue
+            directories.append(
+                SourceDirectoryEntry(
+                    name=child.name,
+                    path=rel,
+                    source_repo_id=source_repo.id if source_repo else None,
+                    source_repo_key=source_repo.key if source_repo else None,
+                    source_repo_name=source_repo.name if source_repo else None,
+                )
+            )
+
+    candidates = current.rglob("*") if recursive else current.iterdir()
+    files: list[IngestFileItem] = []
+    for path in candidates:
+        if not is_project_source_file(path, root):
+            continue
+        rel = path.resolve().relative_to(root).as_posix()
+        files.append(
+            IngestFileItem(
+                source_file=rel,
+                source_path=str(path),
+                status="not_queued",
+                file_size=path.stat().st_size,
+                source_repo_id=source_repo.id if source_repo else None,
+                source_repo_key=source_repo.key if source_repo else None,
+                source_repo_name=source_repo.name if source_repo else None,
+            )
+        )
+
+    directories.sort(key=lambda entry: entry.name.lower())
+    files.sort(key=lambda item: item.source_file.lower())
+    return directories, files
+
+
 def _file_sha256(path: Path) -> str:
     h = hashlib.sha256()
     with path.open("rb") as f:
@@ -159,25 +249,35 @@ def save_source_map(project_dir: str, source_map: dict[str, dict[str, str]]) -> 
     path.write_text(json.dumps(source_map, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def stage_source_for_ingest(project_dir: str, source_path: str, source_root: str) -> Path:
+def stage_source_for_ingest(
+    project_dir: str,
+    source_path: str,
+    source_root: str,
+    source_repo: SourceRepoMetadata | None = None,
+) -> Path:
     """Copy a selected provider file into raw/sources and record its origin."""
     src = Path(source_path)
     root = Path(source_root)
     rel = src.resolve().relative_to(root.resolve()).as_posix()
-    raw_root = Path(project_dir) / "raw" / "sources"
-    dest = raw_root / rel
+    map_key = f"{source_repo.key}/{rel}" if source_repo else rel
+    raw_root = raw_source_root(project_dir)
+    dest = raw_root / map_key
     if src.resolve() == dest.resolve():
         return dest
 
     dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, dest)
     source_map = load_source_map(project_dir)
-    source_map[rel] = {
+    source_map[map_key] = {
         "source_path": rel,
-        "raw_source_path": f"raw/sources/{rel}",
+        "raw_source_path": f"raw/sources/{map_key}",
         "sha256": _file_sha256(src),
         "copied_at": datetime.now(timezone.utc).isoformat(),
     }
+    if source_repo:
+        source_map[map_key]["source_repo_id"] = source_repo.id
+        source_map[map_key]["source_repo_key"] = source_repo.key
+        source_map[map_key]["source_repo_name"] = source_repo.name
     save_source_map(project_dir, source_map)
     return dest
 
