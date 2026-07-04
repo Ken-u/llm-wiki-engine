@@ -76,3 +76,27 @@ class ProjectMember(Base):
     project_id: Mapped[str] = mapped_column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     role: Mapped[str] = mapped_column(String(16), nullable=False, default="editor")
+
+
+class ProjectSourceRepository(Base):
+    __tablename__ = "project_source_repositories"
+    __table_args__ = (UniqueConstraint("project_id", "key"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    project_id: Mapped[str] = mapped_column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    key: Mapped[str] = mapped_column(String(128), nullable=False)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    repo_url: Mapped[str] = mapped_column(String(512), default="", server_default="")
+    branch: Mapped[str] = mapped_column(String(128), default="main", server_default="main")
+    username: Mapped[str] = mapped_column(String(128), default="", server_default="")
+    auth_token: Mapped[str] = mapped_column(String(512), default="", server_default="")
+    author_name: Mapped[str] = mapped_column(String(128), default="", server_default="")
+    author_email: Mapped[str] = mapped_column(String(256), default="", server_default="")
+    sync_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    auto_compile: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    sync_time: Mapped[str] = mapped_column(String(8), default="02:00", server_default="02:00")
+    last_sync_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
+    last_sync_status: Mapped[str] = mapped_column(String(16), default="idle", server_default="idle")
+    last_sync_error: Mapped[str] = mapped_column(Text, default="", server_default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())

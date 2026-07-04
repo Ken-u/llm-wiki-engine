@@ -53,7 +53,7 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 async def init_db() -> None:
     from app.auth.models import User, UserApiToken  # noqa: F401
     from app.ingest.models import IngestJob  # noqa: F401
-    from app.projects.models import Project, ProjectMember  # noqa: F401
+    from app.projects.models import Project, ProjectMember, ProjectSourceRepository  # noqa: F401
     from app.agents.models import Agent, AgentProject  # noqa: F401
     from app.feedback.models import FeedbackTask  # noqa: F401
 
@@ -168,6 +168,30 @@ async def _auto_migrate(conn) -> None:
             logger.info("Migrated: added %s.%s", table, column)
         except Exception:
             pass  # column already exists
+
+    await conn.execute(sqlalchemy.text("""
+        CREATE TABLE IF NOT EXISTS project_source_repositories (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            key TEXT NOT NULL,
+            name TEXT NOT NULL,
+            repo_url TEXT DEFAULT '',
+            branch TEXT DEFAULT 'main',
+            username TEXT DEFAULT '',
+            auth_token TEXT DEFAULT '',
+            author_name TEXT DEFAULT '',
+            author_email TEXT DEFAULT '',
+            sync_enabled BOOLEAN DEFAULT 0,
+            auto_compile BOOLEAN DEFAULT 0,
+            sync_time TEXT DEFAULT '02:00',
+            last_sync_at DATETIME DEFAULT NULL,
+            last_sync_status TEXT DEFAULT 'idle',
+            last_sync_error TEXT DEFAULT '',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(project_id, key)
+        )
+    """))
 
     await _ensure_system_settings_table(conn)
     await _migrate_legacy_git_config_to_publish(conn)
