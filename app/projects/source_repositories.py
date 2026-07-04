@@ -61,6 +61,8 @@ async def list_source_repositories(
     )
     if repos:
         return repos
+    if not (project.git_repo_url or "").strip():
+        return []
     return [await create_default_source_repository(db, project)]
 
 

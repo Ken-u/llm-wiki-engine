@@ -141,6 +141,10 @@ def test_source_repository_crud_api_hides_auth_and_enforces_owner_permissions(tm
                 )
                 assert delete_resp.status_code == 204
 
+                empty_list_resp = await client.get("/api/projects/project-1/source-repositories")
+                assert empty_list_resp.status_code == 200
+                assert empty_list_resp.json() == []
+
                 missing_resp = await client.patch(
                     f"/api/projects/project-1/source-repositories/{created['id']}",
                     json={"branch": "main"},
