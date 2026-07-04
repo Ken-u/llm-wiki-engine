@@ -261,8 +261,13 @@ def _commit_and_publish(project: Project) -> bool:
     return True
 
 
-def _should_auto_enqueue_compile(project: Project) -> bool:
-    return bool(project.git_sync_auto_compile) and not bool(project.ingest_paused)
+def _should_auto_enqueue_compile(project: Project, source_repo: ProjectSourceRepository | None = None) -> bool:
+    auto_compile = (
+        source_repo.auto_compile
+        if source_repo is not None
+        else project.git_sync_auto_compile
+    )
+    return bool(auto_compile) and not bool(project.ingest_paused)
 
 
 # --- Public API ---
@@ -476,9 +481,8 @@ async def sync_source_repository(
             if not changed_files:
                 logger.info("All source files unchanged for project %s, skipping compile", project_id)
 
-            # Enqueue ingest only for changed files, unless project-level
-            # compilation is paused. The file status view will still surface
-            # changed files for manual incremental enqueue.
+            # Enqueue ingest only for changed files when this source repository
+            # enables auto compile and project-level compilation is not paused.
             job_ids = []
             if project.project_type == "case_library":
                 if changed_files:
@@ -490,7 +494,7 @@ async def sync_source_repository(
                         from app.case_index.builder import mark_case_index_stale
                         mark_case_index_stale(project.disk_path)
                         logger.info("Marked case index as stale for project %s", project_id)
-            elif not _should_auto_enqueue_compile(project):
+            elif not _should_auto_enqueue_compile(project, source_repo):
                 logger.info("Auto compile disabled for project %s, skipping automatic enqueue", project_id)
             else:
                 for src_file in changed_files:

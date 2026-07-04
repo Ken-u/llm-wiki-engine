@@ -368,6 +368,101 @@ def test_sync_all_source_repositories_records_bad_repo_and_continues(tmp_path, m
     asyncio.run(run())
 
 
+def test_sync_source_repository_uses_repo_auto_compile_setting(tmp_path, monkeypatch):
+    async def run():
+        from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+        from app.agents.models import Agent  # noqa: F401
+        from app.auth.models import User
+        from app.database import Base
+        from app.projects.models import Project, ProjectSourceRepository
+
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'repo-auto-compile.db'}")
+        Session = async_sessionmaker(engine, expire_on_commit=False)
+        project_dir = tmp_path / "project-dir"
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        async with Session() as db:
+            db.add(User(id=1, username="owner", password_hash="x", role="user"))
+            db.add(Project(
+                id="project-1",
+                name="Project",
+                slug="project",
+                description="",
+                created_by=1,
+                git_sync_auto_compile=True,
+                ingest_paused=False,
+            ))
+            db.add_all([
+                ProjectSourceRepository(
+                    id="manual-repo",
+                    project_id="project-1",
+                    key="manual",
+                    name="Manual",
+                    repo_url="https://git.example.com/org/manual.git",
+                    auth_token="secret",
+                    auto_compile=False,
+                ),
+                ProjectSourceRepository(
+                    id="auto-repo",
+                    project_id="project-1",
+                    key="auto",
+                    name="Auto",
+                    repo_url="https://git.example.com/org/auto.git",
+                    auth_token="secret",
+                    auto_compile=True,
+                ),
+            ])
+            await db.commit()
+
+        def fake_disk_path(self):
+            return str(project_dir)
+
+        def fake_ensure_repo(project, source_repo):
+            root = source_repo_checkout_root(project, source_repo)
+            root.mkdir(parents=True, exist_ok=True)
+            (root / f"{source_repo.key}.md").write_text(f"{source_repo.key}\n", encoding="utf-8")
+
+        enqueued = []
+
+        async def fake_enqueue(**kwargs):
+            enqueued.append(kwargs)
+            return f"job-{len(enqueued)}"
+
+        async def fake_wait_for_jobs(job_ids):
+            return None
+
+        async def fake_get_failed_jobs(job_ids):
+            return []
+
+        async def fake_check_cache(project_dir, source_identity, content):
+            return False
+
+        monkeypatch.setattr(git_sync, "async_session", Session)
+        monkeypatch.setattr(Project, "disk_path", property(fake_disk_path))
+        monkeypatch.setattr(git_sync, "_ensure_repo", fake_ensure_repo)
+        monkeypatch.setattr(git_sync.ingest_queue, "enqueue", fake_enqueue)
+        monkeypatch.setattr(git_sync, "_wait_for_jobs", fake_wait_for_jobs)
+        monkeypatch.setattr(git_sync, "_get_failed_jobs", fake_get_failed_jobs)
+        monkeypatch.setattr(git_sync, "check_cache", fake_check_cache)
+
+        await git_sync.sync_source_repository("project-1", "manual-repo", triggered_by=7)
+        assert enqueued == []
+
+        await git_sync.sync_source_repository("project-1", "auto-repo", triggered_by=7)
+        assert len(enqueued) == 1
+        assert enqueued[0]["project_id"] == "project-1"
+        assert enqueued[0]["user_id"] == 7
+        assert enqueued[0]["source_path"].endswith(".llm-wiki/source-repos/auto/auto.md")
+
+        await engine.dispose()
+
+    import asyncio
+
+    asyncio.run(run())
+
+
 def test_ensure_repo_remote_default_branch_differs_from_target_branch(tmp_path):
     remote = tmp_path / "remote.git"
     subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True, text=True)
