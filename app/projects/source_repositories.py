@@ -64,6 +64,84 @@ async def list_source_repositories(
     return [await create_default_source_repository(db, project)]
 
 
+async def create_source_repository(
+    db: AsyncSession,
+    project: Project,
+    *,
+    key: str,
+    name: str,
+    repo_url: str = "",
+    branch: str = "main",
+    username: str = "",
+    auth_token: str = "",
+    author_name: str = "",
+    author_email: str = "",
+    sync_enabled: bool = False,
+    auto_compile: bool = False,
+    sync_time: str = "02:00",
+) -> ProjectSourceRepository:
+    try:
+        normalized_key = normalize_source_repo_key(key)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid source repository key") from exc
+
+    existing = (
+        await db.execute(
+            select(ProjectSourceRepository).where(
+                ProjectSourceRepository.project_id == project.id,
+                ProjectSourceRepository.key == normalized_key,
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Source repository key already exists")
+
+    repo = ProjectSourceRepository(
+        id=str(uuid.uuid4()),
+        project_id=project.id,
+        key=normalized_key,
+        name=name,
+        repo_url=repo_url,
+        branch=branch,
+        username=username,
+        auth_token=auth_token,
+        author_name=author_name,
+        author_email=author_email,
+        sync_enabled=sync_enabled,
+        auto_compile=auto_compile,
+        sync_time=sync_time,
+    )
+    db.add(repo)
+    await db.commit()
+    await db.refresh(repo)
+    return repo
+
+
+async def update_source_repository(
+    db: AsyncSession,
+    repo: ProjectSourceRepository,
+    **fields,
+) -> ProjectSourceRepository:
+    fields.pop("key", None)
+    for field_name, value in fields.items():
+        if value is not None:
+            setattr(repo, field_name, value)
+
+    await db.commit()
+    await db.refresh(repo)
+    return repo
+
+
+async def delete_source_repository(
+    db: AsyncSession,
+    project: Project,
+    repo_id: str,
+) -> None:
+    repo = await get_source_repository_or_404(db, project, repo_id)
+    await db.delete(repo)
+    await db.commit()
+
+
 async def create_default_source_repository(
     db: AsyncSession,
     project: Project,

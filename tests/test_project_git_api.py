@@ -47,6 +47,13 @@ def test_git_auth_token_not_in_response_model():
     assert "git_auth_configured" in fields
 
 
+def test_source_repository_response_hides_auth_token():
+    from app.projects.router import SourceRepositoryResponse
+    fields = set(SourceRepositoryResponse.model_fields.keys())
+    assert "auth_token" not in fields
+    assert "auth_configured" in fields
+
+
 def test_update_request_has_git_fields():
     from app.projects.router import UpdateProjectRequest
     fields = set(UpdateProjectRequest.model_fields.keys())
@@ -65,6 +72,19 @@ def test_git_test_request_has_override_fields():
         "git_repo_url", "git_branch", "git_username", "git_auth_token",
     }
     assert expected.issubset(fields)
+
+
+def test_legacy_git_routes_stay_registered():
+    from app.projects.router import router
+
+    paths = {
+        (method, route.path)
+        for route in router.routes
+        for method in getattr(route, "methods", set())
+    }
+
+    assert ("POST", "/api/projects/{project_id}/git/test") in paths
+    assert ("POST", "/api/projects/{project_id}/git/sync") in paths
 
 
 def test_project_for_git_test_prefers_request_overrides():

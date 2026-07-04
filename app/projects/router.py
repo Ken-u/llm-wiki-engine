@@ -15,6 +15,7 @@ from app.auth.models import User
 from app.database import get_db
 from app.projects import service
 from app.projects.models import Project, ProjectMember
+from app.projects import source_repositories as source_repo_service
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 
@@ -94,6 +95,54 @@ class UpdateProjectRequest(BaseModel):
     ingest_paused: bool | None = None
 
 
+class SourceRepositoryCreateRequest(BaseModel):
+    key: str = Field(min_length=1, max_length=128)
+    name: str = Field(min_length=1, max_length=128)
+    repo_url: str = ""
+    branch: str = "main"
+    username: str = ""
+    auth_token: str = ""
+    author_name: str = ""
+    author_email: str = ""
+    sync_enabled: bool = False
+    auto_compile: bool = False
+    sync_time: str = "02:00"
+
+
+class SourceRepositoryUpdateRequest(BaseModel):
+    name: str | None = None
+    repo_url: str | None = None
+    branch: str | None = None
+    username: str | None = None
+    auth_token: str | None = None
+    author_name: str | None = None
+    author_email: str | None = None
+    sync_enabled: bool | None = None
+    auto_compile: bool | None = None
+    sync_time: str | None = None
+
+
+class SourceRepositoryResponse(BaseModel):
+    id: str
+    project_id: str
+    key: str
+    name: str
+    repo_url: str = ""
+    branch: str = "main"
+    username: str = ""
+    author_name: str = ""
+    author_email: str = ""
+    sync_enabled: bool = False
+    auto_compile: bool = False
+    sync_time: str = "02:00"
+    last_sync_at: datetime | None = None
+    last_sync_status: str = "idle"
+    last_sync_error: str = ""
+    auth_configured: bool = False
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
 class TestGitConnectionRequest(BaseModel):
     git_repo_url: str | None = None
     git_branch: str | None = None
@@ -164,6 +213,29 @@ async def _build_project_response(db: AsyncSession, proj: Project) -> ProjectRes
         ingest_paused=proj.ingest_paused,
         project_type=proj.project_type,
         case_index_auto_rebuild=proj.case_index_auto_rebuild,
+    )
+
+
+def _build_source_repository_response(repo) -> SourceRepositoryResponse:
+    return SourceRepositoryResponse(
+        id=repo.id,
+        project_id=repo.project_id,
+        key=repo.key,
+        name=repo.name,
+        repo_url=repo.repo_url,
+        branch=repo.branch,
+        username=repo.username,
+        author_name=repo.author_name,
+        author_email=repo.author_email,
+        sync_enabled=repo.sync_enabled,
+        auto_compile=repo.auto_compile,
+        sync_time=repo.sync_time,
+        last_sync_at=repo.last_sync_at,
+        last_sync_status=repo.last_sync_status,
+        last_sync_error=repo.last_sync_error,
+        auth_configured=bool(repo.auth_token),
+        created_at=repo.created_at,
+        updated_at=repo.updated_at,
     )
 
 
@@ -325,6 +397,76 @@ async def list_members(
     await service.check_membership(db, project_id, user)
     stmt = select(ProjectMember).where(ProjectMember.project_id == project_id)
     return list((await db.execute(stmt)).scalars().all())
+
+
+@router.get("/{project_id}/source-repositories", response_model=list[SourceRepositoryResponse])
+async def list_project_source_repositories(
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await service.check_membership(db, project_id, user)
+    proj = await service.get_project_or_404(db, project_id)
+    repos = await source_repo_service.list_source_repositories(db, proj)
+    return [_build_source_repository_response(repo) for repo in repos]
+
+
+@router.post(
+    "/{project_id}/source-repositories",
+    response_model=SourceRepositoryResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_project_source_repository(
+    project_id: str,
+    body: SourceRepositoryCreateRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await service.check_membership(db, project_id, user, require="owner")
+    proj = await service.get_project_or_404(db, project_id)
+    repo = await source_repo_service.create_source_repository(
+        db,
+        proj,
+        key=body.key,
+        name=body.name,
+        repo_url=body.repo_url,
+        branch=body.branch,
+        username=body.username,
+        auth_token=body.auth_token,
+        author_name=body.author_name,
+        author_email=body.author_email,
+        sync_enabled=body.sync_enabled,
+        auto_compile=body.auto_compile,
+        sync_time=body.sync_time,
+    )
+    return _build_source_repository_response(repo)
+
+
+@router.patch("/{project_id}/source-repositories/{repo_id}", response_model=SourceRepositoryResponse)
+async def update_project_source_repository(
+    project_id: str,
+    repo_id: str,
+    body: SourceRepositoryUpdateRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await service.check_membership(db, project_id, user, require="owner")
+    proj = await service.get_project_or_404(db, project_id)
+    repo = await source_repo_service.get_source_repository_or_404(db, proj, repo_id)
+    repo = await source_repo_service.update_source_repository(db, repo, **body.model_dump(exclude_unset=True))
+    return _build_source_repository_response(repo)
+
+
+@router.delete("/{project_id}/source-repositories/{repo_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_project_source_repository(
+    project_id: str,
+    repo_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await service.check_membership(db, project_id, user, require="owner")
+    proj = await service.get_project_or_404(db, project_id)
+    await source_repo_service.delete_source_repository(db, proj, repo_id)
 
 
 @router.post("/{project_id}/git/test")

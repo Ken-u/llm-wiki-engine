@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+import httpx
 import pytest
 from fastapi import HTTPException
 from sqlalchemy import select
@@ -8,7 +9,8 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from app.agents.models import Agent  # noqa: F401
 from app.auth.models import User
 from app.database import Base
-from app.projects.models import Project, ProjectSourceRepository
+from app.projects.models import Project, ProjectMember, ProjectSourceRepository
+from app.projects.router import router as projects_router
 from app.projects.source_repositories import (
     create_default_source_repository,
     get_source_repository_or_404,
@@ -17,6 +19,141 @@ from app.projects.source_repositories import (
     normalize_source_repo_key,
     source_repo_checkout_root,
 )
+
+
+def _route_paths() -> set[tuple[str, str]]:
+    return {
+        (method, route.path)
+        for route in projects_router.routes
+        for method in getattr(route, "methods", set())
+    }
+
+
+def test_source_repository_api_routes_are_registered():
+    assert ("GET", "/api/projects/{project_id}/source-repositories") in _route_paths()
+    assert ("POST", "/api/projects/{project_id}/source-repositories") in _route_paths()
+    assert ("PATCH", "/api/projects/{project_id}/source-repositories/{repo_id}") in _route_paths()
+    assert ("DELETE", "/api/projects/{project_id}/source-repositories/{repo_id}") in _route_paths()
+
+
+def test_source_repository_crud_api_hides_auth_and_enforces_owner_permissions(tmp_path):
+    async def run():
+        from app.auth.deps import get_current_user
+        from app.database import get_db
+        from app.main import app
+
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'repos-api.db'}")
+        Session = async_sessionmaker(engine, expire_on_commit=False)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        async with Session() as seed_db:
+            owner = User(id=1, username="owner", password_hash="x", role="user")
+            viewer = User(id=2, username="viewer", password_hash="x", role="user")
+            outsider = User(id=3, username="outsider", password_hash="x", role="user")
+            project = Project(id="project-1", name="Project", slug="project", description="", created_by=1)
+            db_viewer = ProjectMember(project_id="project-1", user_id=2, role="viewer")
+            db_owner = ProjectMember(project_id="project-1", user_id=1, role="owner")
+            seed_db.add_all([owner, viewer, outsider, project, db_owner, db_viewer])
+            await seed_db.commit()
+
+        current_user = owner
+
+        async def override_get_db():
+            async with Session() as db:
+                yield db
+
+        async def override_get_current_user():
+            return current_user
+
+        app.dependency_overrides[get_db] = override_get_db
+        app.dependency_overrides[get_current_user] = override_get_current_user
+        transport = httpx.ASGITransport(app=app)
+        try:
+            async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+                create_resp = await client.post(
+                    "/api/projects/project-1/source-repositories",
+                    json={
+                        "key": "Frontend-Docs",
+                        "name": "Frontend Docs",
+                        "repo_url": "https://git.example.com/org/frontend-docs.git",
+                        "branch": "main",
+                        "username": "bot",
+                        "auth_token": "secret-token",
+                        "author_name": "Docs Bot",
+                        "author_email": "docs@example.com",
+                        "sync_enabled": True,
+                        "auto_compile": True,
+                        "sync_time": "03:15",
+                    },
+                )
+                assert create_resp.status_code == 201
+                created = create_resp.json()
+                assert created["key"] == "frontend-docs"
+                assert created["name"] == "Frontend Docs"
+                assert created["auth_configured"] is True
+                assert "auth_token" not in created
+
+                duplicate_resp = await client.post(
+                    "/api/projects/project-1/source-repositories",
+                    json={
+                        "key": "frontend-docs",
+                        "name": "Duplicate",
+                        "repo_url": "https://git.example.com/org/duplicate.git",
+                    },
+                )
+                assert duplicate_resp.status_code == 409
+
+                list_resp = await client.get("/api/projects/project-1/source-repositories")
+                assert list_resp.status_code == 200
+                listed = list_resp.json()
+                assert listed[0]["id"] == created["id"]
+                assert listed[0]["auth_configured"] is True
+                assert "auth_token" not in listed[0]
+
+                current_user = viewer
+                viewer_list_resp = await client.get("/api/projects/project-1/source-repositories")
+                assert viewer_list_resp.status_code == 200
+
+                viewer_patch_resp = await client.patch(
+                    f"/api/projects/project-1/source-repositories/{created['id']}",
+                    json={"branch": "release"},
+                )
+                assert viewer_patch_resp.status_code == 403
+
+                current_user = owner
+                update_resp = await client.patch(
+                    f"/api/projects/project-1/source-repositories/{created['id']}",
+                    json={"branch": "release", "key": "ignored-key"},
+                )
+                assert update_resp.status_code == 200
+                updated = update_resp.json()
+                assert updated["branch"] == "release"
+                assert updated["key"] == "frontend-docs"
+
+                current_user = outsider
+                outsider_list_resp = await client.get("/api/projects/project-1/source-repositories")
+                assert outsider_list_resp.status_code == 403
+
+                current_user = owner
+                delete_resp = await client.delete(
+                    f"/api/projects/project-1/source-repositories/{created['id']}"
+                )
+                assert delete_resp.status_code == 204
+
+                missing_resp = await client.patch(
+                    f"/api/projects/project-1/source-repositories/{created['id']}",
+                    json={"branch": "main"},
+                )
+                assert missing_resp.status_code == 404
+        finally:
+            app.dependency_overrides.pop(get_db, None)
+            app.dependency_overrides.pop(get_current_user, None)
+            await engine.dispose()
+
+    import asyncio
+
+    asyncio.run(run())
 
 
 def test_normalize_source_repo_key_accepts_safe_values():
