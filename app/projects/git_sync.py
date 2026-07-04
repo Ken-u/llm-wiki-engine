@@ -21,9 +21,9 @@ from app.ingest.queue import ingest_queue
 from app.projects.models import Project, ProjectSourceRepository
 from app.projects.source_repositories import (
     DEFAULT_SOURCE_REPO_KEY,
-    create_default_source_repository,
     list_source_repositories,
     source_repo_checkout_root,
+    sync_default_source_repository_from_project,
 )
 
 logger = logging.getLogger(__name__)
@@ -358,6 +358,18 @@ async def publish_project_to_git(project_id: str, *, triggered_by: int = 0) -> N
                 raise RuntimeError(f"Project {project_id} not found")
             if not project.publish_repo_url or not project.publish_auth_token:
                 raise RuntimeError("发布仓库配置不完整")
+            repo_ids = list(
+                (
+                    await db.execute(
+                        select(ProjectSourceRepository.id).where(
+                            ProjectSourceRepository.project_id == project_id
+                        )
+                    )
+                ).scalars().all()
+            )
+            for repo_id in repo_ids:
+                if _get_sync_lock(f"{project_id}:{repo_id}").locked():
+                    raise RuntimeError("该项目已有源仓库同步正在执行，无法发布")
 
             project.last_publish_status = "syncing"
             project.last_publish_error = ""
@@ -418,6 +430,9 @@ async def sync_source_repository(
     lock = _get_sync_lock(f"{project_id}:{repo_id}")
     if lock.locked():
         raise RuntimeError("该项目已有同步正在执行")
+    publish_lock = _get_sync_lock(f"{project_id}:publish")
+    if publish_lock.locked():
+        raise RuntimeError("该项目已有发布正在执行，无法同步源仓库")
 
     async with lock:
         async with async_session() as db:
@@ -602,7 +617,7 @@ async def sync_project_from_git(
             raise RuntimeError(f"Project {project_id} not found")
         if not project.git_repo_url or not project.git_auth_token:
             raise RuntimeError("Git 配置不完整")
-        source_repo = await create_default_source_repository(db, project)
+        source_repo = await sync_default_source_repository_from_project(db, project)
 
     await sync_source_repository(project_id, source_repo.id, triggered_by=triggered_by, source=source)
 

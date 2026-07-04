@@ -139,8 +139,14 @@ def test_legacy_git_sync_checks_default_source_repository_lock(monkeypatch):
             git_auth_token="secret",
         )
 
-    async def fake_create_default_source_repository(db, project):
-        return SimpleNamespace(id="default-repo", project_id=project.id, key="default")
+    async def fake_sync_default_source_repository_from_project(db, project):
+        return SimpleNamespace(
+            id="default-repo",
+            project_id=project.id,
+            key="default",
+            repo_url=project.git_repo_url,
+            auth_token=project.git_auth_token,
+        )
 
     class Lock:
         def __init__(self, locked):
@@ -157,7 +163,11 @@ def test_legacy_git_sync_checks_default_source_repository_lock(monkeypatch):
 
     monkeypatch.setattr(projects_router.service, "check_membership", fake_check_membership)
     monkeypatch.setattr(projects_router.service, "get_project_or_404", fake_get_project_or_404)
-    monkeypatch.setattr(projects_router.source_repo_service, "create_default_source_repository", fake_create_default_source_repository)
+    monkeypatch.setattr(
+        projects_router.source_repo_service,
+        "sync_default_source_repository_from_project",
+        fake_sync_default_source_repository_from_project,
+    )
 
     import app.projects.git_sync as git_sync
 
@@ -175,3 +185,83 @@ def test_legacy_git_sync_checks_default_source_repository_lock(monkeypatch):
 
     asyncio.run(run())
     assert seen_lock_keys == ["project-1:default-repo"]
+
+
+def test_legacy_git_sync_requires_default_source_repository_token(monkeypatch):
+    from types import SimpleNamespace
+
+    from fastapi import HTTPException
+
+    from app.projects import router as projects_router
+    import asyncio
+
+    async def fake_check_membership(db, project_id, user):
+        return None
+
+    async def fake_get_project_or_404(db, project_id):
+        return SimpleNamespace(
+            id=project_id,
+            git_repo_url="https://git.example.com/org/docs.git",
+            git_auth_token="",
+        )
+
+    async def fake_sync_default_source_repository_from_project(db, project):
+        return SimpleNamespace(
+            id="default-repo",
+            project_id=project.id,
+            key="default",
+            repo_url="https://git.example.com/org/docs.git",
+            auth_token="",
+        )
+
+    monkeypatch.setattr(projects_router.service, "check_membership", fake_check_membership)
+    monkeypatch.setattr(projects_router.service, "get_project_or_404", fake_get_project_or_404)
+    monkeypatch.setattr(
+        projects_router.source_repo_service,
+        "sync_default_source_repository_from_project",
+        fake_sync_default_source_repository_from_project,
+    )
+    monkeypatch.setattr(asyncio, "create_task", lambda coro: coro.close())
+
+    async def run():
+        try:
+            await projects_router.trigger_git_sync("project-1", user=SimpleNamespace(id=1), db=object())
+        except HTTPException as exc:
+            assert exc.status_code == 400
+        else:
+            raise AssertionError("legacy git sync should reject missing default source repo token")
+
+    asyncio.run(run())
+
+
+def test_git_publish_requires_token(monkeypatch):
+    from types import SimpleNamespace
+
+    from fastapi import HTTPException
+
+    from app.projects import router as projects_router
+    import asyncio
+
+    async def fake_check_membership(db, project_id, user):
+        return None
+
+    async def fake_get_project_or_404(db, project_id):
+        return SimpleNamespace(
+            id=project_id,
+            publish_repo_url="https://git.example.com/org/publish.git",
+            publish_auth_token="",
+        )
+
+    monkeypatch.setattr(projects_router.service, "check_membership", fake_check_membership)
+    monkeypatch.setattr(projects_router.service, "get_project_or_404", fake_get_project_or_404)
+    monkeypatch.setattr(asyncio, "create_task", lambda coro: coro.close())
+
+    async def run():
+        try:
+            await projects_router.trigger_git_publish("project-1", user=SimpleNamespace(id=1), db=object())
+        except HTTPException as exc:
+            assert exc.status_code == 400
+        else:
+            raise AssertionError("git publish should reject missing publish token")
+
+    asyncio.run(run())

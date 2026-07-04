@@ -183,6 +183,37 @@ async def create_default_source_repository(
     return repo
 
 
+async def sync_default_source_repository_from_project(
+    db: AsyncSession,
+    project: Project,
+) -> ProjectSourceRepository:
+    """Create or update the legacy default source repo from project Git fields."""
+    repo = (
+        await db.execute(
+            select(ProjectSourceRepository).where(
+                ProjectSourceRepository.project_id == project.id,
+                ProjectSourceRepository.key == DEFAULT_SOURCE_REPO_KEY,
+            )
+        )
+    ).scalar_one_or_none()
+    if repo is None:
+        return await create_default_source_repository(db, project)
+
+    repo.name = infer_repo_name(project.git_repo_url or "")
+    repo.repo_url = project.git_repo_url or ""
+    repo.branch = project.git_branch or "main"
+    repo.username = project.git_username or ""
+    repo.auth_token = project.git_auth_token or ""
+    repo.author_name = project.git_author_name or ""
+    repo.author_email = project.git_author_email or ""
+    repo.sync_enabled = bool(project.git_sync_enabled)
+    repo.auto_compile = bool(project.git_sync_auto_compile)
+    repo.sync_time = project.git_sync_time or "02:00"
+    await db.commit()
+    await db.refresh(repo)
+    return repo
+
+
 async def get_source_repository_or_404(
     db: AsyncSession,
     project: Project,

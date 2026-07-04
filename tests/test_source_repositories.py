@@ -188,6 +188,189 @@ def test_source_repository_crud_api_hides_auth_and_enforces_owner_permissions(tm
     asyncio.run(run())
 
 
+def test_source_repository_create_enabled_and_delete_refresh_sync_jobs(monkeypatch):
+    async def run():
+        import asyncio
+
+        from app.projects import router as projects_router
+
+        created_tasks = []
+        register_calls = 0
+
+        async def fake_register_sync_jobs():
+            nonlocal register_calls
+            register_calls += 1
+
+        def fake_create_task(coro):
+            created_tasks.append(coro)
+            return SimpleNamespace()
+
+        async def fake_check_membership(db, project_id, user, require=None):
+            return None
+
+        async def fake_get_project_or_404(db, project_id):
+            return SimpleNamespace(id=project_id)
+
+        async def fake_create_source_repository(db, project, **kwargs):
+            return SimpleNamespace(
+                id="repo-1",
+                project_id=project.id,
+                key=kwargs["key"],
+                name=kwargs["name"],
+                repo_url=kwargs["repo_url"],
+                branch=kwargs["branch"],
+                username=kwargs["username"],
+                auth_token=kwargs["auth_token"],
+                author_name=kwargs["author_name"],
+                author_email=kwargs["author_email"],
+                sync_enabled=kwargs["sync_enabled"],
+                auto_compile=kwargs["auto_compile"],
+                sync_time=kwargs["sync_time"],
+                last_sync_at=None,
+                last_sync_status="idle",
+                last_sync_error="",
+                created_at=None,
+                updated_at=None,
+            )
+
+        async def fake_delete_source_repository(db, project, repo_id):
+            return None
+
+        import app.projects.git_sync as git_sync
+
+        monkeypatch.setattr(projects_router.service, "check_membership", fake_check_membership)
+        monkeypatch.setattr(projects_router.service, "get_project_or_404", fake_get_project_or_404)
+        monkeypatch.setattr(projects_router.source_repo_service, "create_source_repository", fake_create_source_repository)
+        monkeypatch.setattr(projects_router.source_repo_service, "delete_source_repository", fake_delete_source_repository)
+        monkeypatch.setattr(git_sync, "register_sync_jobs", fake_register_sync_jobs)
+        monkeypatch.setattr(asyncio, "create_task", fake_create_task)
+
+        body = projects_router.SourceRepositoryCreateRequest(
+            key="docs",
+            name="Docs",
+            repo_url="https://git.example.com/org/docs.git",
+            auth_token="secret",
+            sync_enabled=True,
+        )
+
+        await projects_router.create_project_source_repository(
+            "project-1",
+            body,
+            user=SimpleNamespace(id=1),
+            db=object(),
+        )
+        await projects_router.delete_project_source_repository(
+            "project-1",
+            "repo-1",
+            user=SimpleNamespace(id=1),
+            db=object(),
+        )
+
+        assert len(created_tasks) == 2
+        for coro in created_tasks:
+            await coro
+        assert register_calls == 2
+
+    import asyncio
+
+    asyncio.run(run())
+
+
+def test_project_git_patch_updates_existing_default_source_repository(tmp_path, monkeypatch):
+    async def run():
+        from app.projects import router as projects_router
+
+        async def fake_register_sync_jobs():
+            return None
+
+        import app.projects.git_sync as git_sync
+
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'legacy-default-sync.db'}")
+        Session = async_sessionmaker(engine, expire_on_commit=False)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        async with Session() as seed_db:
+            owner = User(id=1, username="owner", password_hash="x", role="user")
+            project = Project(
+                id="project-1",
+                name="Project",
+                slug="project",
+                description="",
+                created_by=1,
+                git_repo_url="https://git.example.com/org/old.git",
+                git_branch="old",
+                git_username="old-user",
+                git_auth_token="old-token",
+                git_author_name="Old Bot",
+                git_author_email="old@example.com",
+                git_sync_enabled=False,
+                git_sync_auto_compile=False,
+                git_sync_time="01:00",
+            )
+            member = ProjectMember(project_id="project-1", user_id=1, role="owner")
+            default_repo = ProjectSourceRepository(
+                id="default-repo",
+                project_id="project-1",
+                key="default",
+                name="old",
+                repo_url="https://git.example.com/org/old.git",
+                branch="old",
+                username="old-user",
+                auth_token="old-token",
+                author_name="Old Bot",
+                author_email="old@example.com",
+                sync_enabled=False,
+                auto_compile=False,
+                sync_time="01:00",
+            )
+            seed_db.add_all([owner, project, member, default_repo])
+            await seed_db.commit()
+
+        monkeypatch.setattr(git_sync, "register_sync_jobs", fake_register_sync_jobs)
+        try:
+            async with Session() as db:
+                resp = await projects_router.update_project(
+                    "project-1",
+                    projects_router.UpdateProjectRequest(
+                        git_repo_url="https://git.example.com/org/new.git",
+                        git_branch="main",
+                        git_username="new-user",
+                        git_auth_token="new-token",
+                        git_author_name="New Bot",
+                        git_author_email="new@example.com",
+                        git_sync_enabled=True,
+                        git_sync_auto_compile=True,
+                        git_sync_time="03:30",
+                    ),
+                    user=User(id=1, username="owner", password_hash="x", role="user"),
+                    db=db,
+                )
+                assert resp.id == "project-1"
+
+            async with Session() as db:
+                repo = (
+                    await db.execute(
+                        select(ProjectSourceRepository).where(ProjectSourceRepository.id == "default-repo")
+                    )
+                ).scalar_one()
+                assert repo.repo_url == "https://git.example.com/org/new.git"
+                assert repo.branch == "main"
+                assert repo.username == "new-user"
+                assert repo.auth_token == "new-token"
+                assert repo.author_name == "New Bot"
+                assert repo.author_email == "new@example.com"
+                assert repo.sync_enabled is True
+                assert repo.auto_compile is True
+                assert repo.sync_time == "03:30"
+        finally:
+            await engine.dispose()
+
+    import asyncio
+
+    asyncio.run(run())
+
+
 def test_normalize_source_repo_key_accepts_safe_values():
     assert normalize_source_repo_key("Docs_API-1") == "docs_api-1"
 

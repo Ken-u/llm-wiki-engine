@@ -174,6 +174,110 @@ def test_source_repository_sync_lock_uses_project_and_repo_id(monkeypatch):
     assert seen_keys == ["project-1:repo-1"]
 
 
+def test_source_repository_sync_rejects_when_publish_lock_is_active(monkeypatch):
+    seen_keys = []
+
+    class Lock:
+        def __init__(self, locked):
+            self._locked = locked
+
+        def locked(self):
+            return self._locked
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    def fake_get_sync_lock(key):
+        seen_keys.append(key)
+        return Lock(key == "project-1:publish")
+
+    monkeypatch.setattr(git_sync, "_get_sync_lock", fake_get_sync_lock)
+
+    async def run():
+        try:
+            await git_sync.sync_source_repository("project-1", "repo-1", triggered_by=1)
+        except RuntimeError as exc:
+            assert "发布正在执行" in str(exc)
+        else:
+            raise AssertionError("sync_source_repository should reject while publish is locked")
+
+    import asyncio
+
+    asyncio.run(run())
+    assert seen_keys == ["project-1:repo-1", "project-1:publish"]
+
+
+def test_publish_rejects_when_any_source_repository_sync_lock_is_active(tmp_path, monkeypatch):
+    async def run():
+        from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+        from app.agents.models import Agent  # noqa: F401
+        from app.auth.models import User
+        from app.database import Base
+        from app.projects.models import Project, ProjectSourceRepository
+
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'publish-locks.db'}")
+        Session = async_sessionmaker(engine, expire_on_commit=False)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        async with Session() as db:
+            db.add(User(id=1, username="owner", password_hash="x", role="user"))
+            db.add(Project(
+                id="project-1",
+                name="Project",
+                slug="project",
+                description="",
+                created_by=1,
+                publish_repo_url="https://git.example.com/org/publish.git",
+                publish_auth_token="secret",
+            ))
+            db.add_all([
+                ProjectSourceRepository(id="repo-1", project_id="project-1", key="one", name="One"),
+                ProjectSourceRepository(id="repo-2", project_id="project-1", key="two", name="Two"),
+            ])
+            await db.commit()
+
+        seen_keys = []
+
+        class Lock:
+            def __init__(self, locked):
+                self._locked = locked
+
+            def locked(self):
+                return self._locked
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        def fake_get_sync_lock(key):
+            seen_keys.append(key)
+            return Lock(key == "project-1:repo-2")
+
+        monkeypatch.setattr(git_sync, "async_session", Session)
+        monkeypatch.setattr(git_sync, "_get_sync_lock", fake_get_sync_lock)
+
+        try:
+            await git_sync.publish_project_to_git("project-1", triggered_by=1)
+        except RuntimeError as exc:
+            assert "源仓库同步正在执行" in str(exc)
+        else:
+            raise AssertionError("publish_project_to_git should reject while a source repo sync is locked")
+
+        assert seen_keys[:3] == ["project-1:publish", "project-1:repo-1", "project-1:repo-2"]
+        await engine.dispose()
+
+    import asyncio
+
+    asyncio.run(run())
+
+
 def test_register_sync_jobs_uses_source_repository_job_ids(tmp_path, monkeypatch):
     async def run():
         from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine

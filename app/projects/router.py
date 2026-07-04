@@ -275,6 +275,13 @@ def _source_repo_for_git_test(repo, body: TestGitConnectionRequest | None):
     )
 
 
+def _schedule_sync_jobs_refresh() -> None:
+    from app.projects.git_sync import register_sync_jobs
+    import asyncio
+
+    asyncio.create_task(register_sync_jobs())
+
+
 @router.post("", response_model=ProjectResponse, status_code=status.HTTP_201_CREATED)
 async def create_project(
     body: CreateProjectRequest,
@@ -367,10 +374,15 @@ async def update_project(
     proj = await service.update_project(db, proj, **kwargs)
 
     git_schedule_fields = {"git_sync_enabled", "git_sync_time"}
+    git_source_repo_fields = {
+        "git_repo_url", "git_branch", "git_username", "git_auth_token",
+        "clear_git_auth_token", "git_author_name", "git_author_email",
+        "git_sync_enabled", "git_sync_auto_compile", "git_sync_time",
+    }
+    if git_source_repo_fields & body.model_fields_set:
+        await source_repo_service.sync_default_source_repository_from_project(db, proj)
     if git_schedule_fields & body.model_fields_set:
-        from app.projects.git_sync import register_sync_jobs
-        import asyncio
-        asyncio.create_task(register_sync_jobs())
+        _schedule_sync_jobs_refresh()
 
     return await _build_project_response(db, proj)
 
@@ -449,6 +461,8 @@ async def create_project_source_repository(
         auto_compile=body.auto_compile,
         sync_time=body.sync_time,
     )
+    if body.sync_enabled:
+        _schedule_sync_jobs_refresh()
     return _build_source_repository_response(repo)
 
 
@@ -471,9 +485,7 @@ async def update_project_source_repository(
     repo = await source_repo_service.update_source_repository(db, repo, **kwargs)
     schedule_fields = {"sync_enabled", "sync_time"}
     if schedule_fields & body.model_fields_set:
-        from app.projects.git_sync import register_sync_jobs
-        import asyncio
-        asyncio.create_task(register_sync_jobs())
+        _schedule_sync_jobs_refresh()
     return _build_source_repository_response(repo)
 
 
@@ -487,6 +499,7 @@ async def delete_project_source_repository(
     await service.check_membership(db, project_id, user, require="owner")
     proj = await service.get_project_or_404(db, project_id)
     await source_repo_service.delete_source_repository(db, proj, repo_id)
+    _schedule_sync_jobs_refresh()
 
 
 @router.post("/{project_id}/source-repositories/{repo_id}/test")
@@ -568,7 +581,11 @@ async def trigger_git_sync(
     proj = await service.get_project_or_404(db, project_id)
     if not proj.git_repo_url:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "未配置 Git 仓库")
-    default_repo = await source_repo_service.create_default_source_repository(db, proj)
+    default_repo = await source_repo_service.sync_default_source_repository_from_project(db, proj)
+    if not default_repo.repo_url:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "未配置 Git 仓库")
+    if not default_repo.auth_token:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "未配置 Git 访问凭证")
     from app.projects.git_sync import sync_project_from_git, _get_sync_lock
     lock = _get_sync_lock(f"{project_id}:{default_repo.id}")
     if lock.locked():
@@ -617,6 +634,8 @@ async def trigger_git_publish(
     proj = await service.get_project_or_404(db, project_id)
     if not proj.publish_repo_url:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "未配置发布仓库")
+    if not proj.publish_auth_token:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "未配置发布仓库访问凭证")
     from app.projects.git_sync import publish_project_to_git, _get_sync_lock
     lock = _get_sync_lock(f"{project_id}:publish")
     if lock.locked():
