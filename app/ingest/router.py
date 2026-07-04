@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+import base64
 from dataclasses import asdict
 from datetime import datetime
+import mimetypes
 from pathlib import Path
 from typing import Literal
 
@@ -17,14 +20,22 @@ from app.auth.models import User
 from app.database import get_db
 from app.documents.parser import parse_document
 from app.ingest.cache import content_hash, load_cache
-from app.ingest.enqueue_service import execute_ingest_enqueue
+from app.ingest.enqueue_service import execute_ingest_enqueue, run_enqueue_task
+from app.ingest.enqueue_tasks import (
+    EnqueueTaskResponse,
+    create_enqueue_task,
+    get_active_enqueue_task,
+    get_enqueue_task,
+)
 from app.ingest.files import (
     IngestFileStatus,
     IngestSelection,
     SourceRepoMetadata,
     SortDirection,
     apply_selection,
+    build_ingest_record_page,
     filter_and_sort_items,
+    is_ingest_records_request,
     is_project_source_file,
     list_project_source_files,
     list_source_tree,
@@ -113,6 +124,7 @@ class IngestFilePageResponse(BaseModel):
     items: list[IngestFileResponse]
     directories: list[dict] = Field(default_factory=list)
     dir: str = ""
+    recursive: bool = False
     total: int
     page: int
     page_size: int
@@ -127,13 +139,16 @@ class IngestFilePreviewResponse(BaseModel):
     truncated: bool
 
 
-class SourceFileContentResponse(BaseModel):
+class IngestSourcePreviewResponse(BaseModel):
     source_file: str
-    source_path: str
+    preview_type: str = "text"
+    mime_type: str = "text/plain"
     content: str
-    source_repo_id: str | None = None
-    source_repo_key: str | None = None
-    source_repo_name: str | None = None
+    truncated: bool
+
+
+def _empty_status_counts() -> dict[str, int]:
+    return {key: 0 for key in ["processing", "queued", "failed", "updated", "not_queued", "compiled"]}
 
 
 def _repo_metadata(repo) -> SourceRepoMetadata:
@@ -314,7 +329,50 @@ async def ingest_files(
 ):
     await check_membership(db, project_id, user)
     project = await get_project_or_404(db, project_id)
-    has_browser_filters = bool(q.strip() or include_globs or exclude_globs)
+    filter_selection = IngestSelection(
+        include_globs=include_globs or [],
+        exclude_globs=exclude_globs or [],
+        search=q,
+    )
+    has_browser_filters = bool(q.strip() or filter_selection.include_globs or filter_selection.exclude_globs)
+    if is_ingest_records_request(
+        status_filter=status_filter,
+        recursive=recursive,
+        has_filters=has_browser_filters,
+        dir=dir,
+    ):
+        jobs = list(
+            (
+                await db.execute(
+                    select(IngestJob)
+                    .where(IngestJob.project_id == project.id)
+                    .where(IngestJob.status != "superseded")
+                    .order_by(IngestJob.created_at.asc())
+                )
+            ).scalars().all()
+        )
+        cache = await load_cache(project.disk_path)
+        record_page = build_ingest_record_page(
+            project_dir=project.disk_path,
+            jobs=jobs,
+            cache=cache,
+            status_filter=status_filter,
+            sort_dir=sort_dir,
+            page=page,
+            page_size=page_size,
+        )
+        return {
+            "items": [asdict(item) for item in record_page.items],
+            "directories": [],
+            "dir": "",
+            "recursive": False,
+            "total": record_page.total,
+            "page": record_page.page,
+            "page_size": record_page.page_size,
+            "project_paused": bool(project.ingest_paused),
+            "status_counts": record_page.counts,
+        }
+
     directories = []
     if source_kind == "remote" and not source_repo_id and not has_browser_filters and not recursive and not status_filter:
         repos = await source_repo_service.list_source_repositories(db, project)
@@ -333,6 +391,7 @@ async def ingest_files(
             "items": [],
             "directories": directories,
             "dir": dir,
+            "recursive": False,
             "total": 0,
             "page": page,
             "page_size": page_size,
@@ -350,7 +409,7 @@ async def ingest_files(
             source_repo_id=source_repo_id,
         )
     items = await _build_file_items(project, db, source_root=source_root, source_repo=source_repo)
-    counts = {key: 0 for key in ["processing", "queued", "failed", "updated", "not_queued", "compiled"]}
+    counts = _empty_status_counts()
     for item in items:
         counts[item.status] = counts.get(item.status, 0) + 1
     if source_kind is not None:
@@ -377,10 +436,7 @@ async def ingest_files(
         items = [item for item in items if item.status == status_filter]
     if include_globs or exclude_globs:
         try:
-            items = apply_selection(
-                items,
-                IngestSelection(include_globs=include_globs, exclude_globs=exclude_globs, search=q),
-            )
+            items = apply_selection(items, filter_selection)
             q = ""
         except ValueError as exc:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from None
@@ -390,6 +446,7 @@ async def ingest_files(
         "items": [asdict(item) for item in page_data.items],
         "directories": directories,
         "dir": dir,
+        "recursive": bool(recursive or has_browser_filters),
         "total": page_data.total,
         "page": page_data.page,
         "page_size": page_data.page_size,
@@ -398,31 +455,54 @@ async def ingest_files(
     }
 
 
-@router.get("/files/content", response_model=SourceFileContentResponse)
+@router.get("/files/content", response_model=IngestSourcePreviewResponse)
 async def preview_source_file(
     project_id: str,
-    source_file: str = Query(...),
-    source_kind: SourceKind = Query(default="local"),
+    source_file: str = Query(..., min_length=1),
+    source_kind: SourceKind = Query(default="remote"),
     source_repo_id: str | None = Query(default=None),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     await check_membership(db, project_id, user)
     project = await get_project_or_404(db, project_id)
-    source_root, source_repo = await _resolve_source_context(
+    source_root, _source_repo = await _resolve_source_context(
         project,
         db,
         source_kind=source_kind,
         source_repo_id=source_repo_id,
     )
-    src = _resolve_source_file(source_root, source_file)
+    target = _resolve_source_file(source_root, source_file)
+
+    mime_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+    rel = target.resolve().relative_to(source_root.resolve()).as_posix()
+    if mime_type.startswith("image/"):
+        max_image_bytes = 5 * 1024 * 1024
+        size = target.stat().st_size
+        if size > max_image_bytes:
+            raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "Image too large to preview")
+        data = base64.b64encode(target.read_bytes()).decode("ascii")
+        return {
+            "source_file": rel,
+            "preview_type": "image",
+            "mime_type": mime_type,
+            "content": f"data:{mime_type};base64,{data}",
+            "truncated": False,
+        }
+
+    try:
+        content = parse_document(target)
+    except Exception as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Cannot preview source file: {exc}") from exc
+
+    limit = 200_000
+    truncated = len(content) > limit
     return {
-        "source_file": src.resolve().relative_to(source_root.resolve()).as_posix(),
-        "source_path": str(src),
-        "content": src.read_text(encoding="utf-8", errors="replace"),
-        "source_repo_id": source_repo.id if source_repo else None,
-        "source_repo_key": source_repo.key if source_repo else None,
-        "source_repo_name": source_repo.name if source_repo else None,
+        "source_file": rel,
+        "preview_type": "text",
+        "mime_type": mime_type,
+        "content": content[:limit],
+        "truncated": truncated,
     }
 
 
@@ -478,6 +558,57 @@ async def enqueue_ingest_files(
             "Wiki compilation is not available for case_library projects. Use case index rebuild instead.",
         )
     return await execute_ingest_enqueue(project_id, body, user.id, db=db)
+
+
+@router.post("/files/enqueue/tasks", response_model=EnqueueTaskResponse, status_code=status.HTTP_202_ACCEPTED)
+async def start_enqueue_ingest_task(
+    project_id: str,
+    body: EnqueueFilesRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await check_membership(db, project_id, user)
+    project = await get_project_or_404(db, project_id)
+    if project.project_type == "case_library":
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "Wiki compilation is not available for case_library projects. Use case index rebuild instead.",
+        )
+    if not body.source_files and body.selection is None and not body.all:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "No source files selected")
+
+    file_count = len(body.source_files) if body.source_files else 0
+    task = create_enqueue_task(
+        project_id,
+        file_count=file_count,
+        stage=f"已提交 {file_count} 个文件" if file_count else "已提交入队请求",
+    )
+    asyncio.create_task(run_enqueue_task(task.task_id, project_id, body, user.id))
+    return task
+
+
+@router.get("/files/enqueue/tasks/current", response_model=EnqueueTaskResponse | None)
+async def get_current_enqueue_task(
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await check_membership(db, project_id, user)
+    return get_active_enqueue_task(project_id)
+
+
+@router.get("/files/enqueue/tasks/{task_id}", response_model=EnqueueTaskResponse)
+async def get_enqueue_task_status(
+    project_id: str,
+    task_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await check_membership(db, project_id, user)
+    task = get_enqueue_task(task_id)
+    if task is None or task.project_id != project_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Enqueue task not found")
+    return task
 
 
 @router.post("/{job_id}/retry", status_code=status.HTTP_202_ACCEPTED)

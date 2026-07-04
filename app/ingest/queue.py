@@ -158,11 +158,39 @@ class IngestQueue:
         user_id: int,
     ) -> str:
         """Create an IngestJob and schedule it."""
-        job_id = await self._create_job(project_id, source_path, user_id)
+        job_ids = await self.enqueue_many(project_id, project_dir, [source_path], user_id)
+        return job_ids[0]
+
+    async def enqueue_many(
+        self,
+        project_id: str,
+        project_dir: str,
+        source_paths: list[str],
+        user_id: int,
+    ) -> list[str]:
+        """Create multiple IngestJobs in one transaction and schedule them."""
+        if not source_paths:
+            return []
+        job_ids = [str(uuid.uuid4()) for _ in source_paths]
+        async with async_session() as db:
+            for job_id, source_path in zip(job_ids, source_paths, strict=True):
+                db.add(
+                    IngestJob(
+                        id=job_id,
+                        project_id=project_id,
+                        source_path=source_path,
+                        status="pending",
+                        progress="Queued",
+                        step=0,
+                        created_by=user_id,
+                    )
+                )
+            await db.commit()
 
         if not await self._is_project_paused(project_id):
-            self._schedule_task(job_id, project_id, project_dir, source_path)
-        return job_id
+            for job_id, source_path in zip(job_ids, source_paths, strict=True):
+                self._schedule_task(job_id, project_id, project_dir, source_path)
+        return job_ids
 
     async def _create_job(
         self,

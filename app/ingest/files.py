@@ -9,10 +9,15 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from fnmatch import fnmatchcase
 from pathlib import Path
-from typing import Literal
+from typing import Callable, Literal
+
+from app.documents.parser import parse_document
+from app.ingest.cache import content_hash
 
 IngestFileStatus = Literal["processing", "queued", "failed", "updated", "not_queued", "compiled"]
+INGEST_RECORD_STATUSES = frozenset({"processing", "queued", "failed", "updated", "compiled"})
 SortDirection = Literal["asc", "desc"]
+SourceKind = Literal["remote", "local"]
 
 _STATUS_PRIORITY: dict[IngestFileStatus, int] = {
     "processing": 0,
@@ -79,6 +84,15 @@ class SourceRepoMetadata:
 
 
 @dataclass
+class IngestRecordPageResult:
+    items: list[IngestFileItem]
+    counts: dict[str, int]
+    total: int
+    page: int
+    page_size: int
+
+
+@dataclass
 class IngestSelection:
     statuses: list[IngestFileStatus] = field(default_factory=list)
     include_globs: list[str] = field(default_factory=list)
@@ -103,6 +117,29 @@ def source_identity(path: str, source_root: str | None = None) -> str:
 
 def provider_source_root(project_dir: str) -> Path:
     return Path(project_dir) / ".llm-wiki" / "source-repo"
+
+
+def local_source_root(project_dir: str) -> Path:
+    return Path(project_dir) / "raw" / "sources"
+
+
+def browser_source_root(project_dir: str, source_kind: SourceKind) -> Path:
+    if source_kind == "remote":
+        return provider_source_root(project_dir)
+    return local_source_root(project_dir)
+
+
+def list_source_files_at_root(source_root: Path) -> list[Path]:
+    if not source_root.exists():
+        return []
+    files = [
+        path for path in source_root.rglob("*")
+        if is_project_source_file(path, source_root)
+    ]
+    return sorted(
+        files,
+        key=lambda path: path.resolve().relative_to(source_root.resolve()).as_posix().lower(),
+    )
 
 
 def preferred_source_root(project_dir: str) -> Path:
@@ -130,6 +167,16 @@ def preferred_source_root(project_dir: str) -> Path:
 
 def is_project_source_file(path: Path, source_root: Path) -> bool:
     if not path.is_file() or path.name.startswith("."):
+        return False
+    try:
+        rel = path.resolve().relative_to(source_root.resolve())
+    except ValueError:
+        return False
+    return not any(part in _EXCLUDED_REPO_SOURCE_DIRS for part in rel.parts)
+
+
+def is_project_source_dir(path: Path, source_root: Path) -> bool:
+    if not path.is_dir() or path.name.startswith("."):
         return False
     try:
         rel = path.resolve().relative_to(source_root.resolve())
@@ -249,6 +296,57 @@ def save_source_map(project_dir: str, source_map: dict[str, dict[str, str]]) -> 
     path.write_text(json.dumps(source_map, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def stage_sources_for_ingest(
+    project_dir: str,
+    pairs: list[tuple[str, str] | tuple[str, str, SourceRepoMetadata | None]],
+    *,
+    on_item: Callable[[int, int, str], None] | None = None,
+) -> list[Path]:
+    """Copy selected files into raw/sources, persisting source-map once."""
+    if not pairs:
+        return []
+    normalized_pairs: list[tuple[str, str, SourceRepoMetadata | None]] = []
+    for pair in pairs:
+        if len(pair) == 2:
+            normalized_pairs.append((pair[0], pair[1], None))
+        else:
+            normalized_pairs.append(pair)
+    source_map = load_source_map(project_dir)
+    raw_root = raw_source_root(project_dir)
+    results: list[Path] = []
+    dirty = False
+    total = len(normalized_pairs)
+    for index, (source_path, source_root, source_repo) in enumerate(normalized_pairs, start=1):
+        src = Path(source_path)
+        root = Path(source_root)
+        rel = src.resolve().relative_to(root.resolve()).as_posix()
+        map_key = f"{source_repo.key}/{rel}" if source_repo else rel
+        if on_item:
+            on_item(index, total, map_key)
+        dest = raw_root / map_key
+        if src.resolve() == dest.resolve():
+            results.append(dest)
+            continue
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dest)
+        entry = {
+            "source_path": rel,
+            "raw_source_path": f"raw/sources/{map_key}",
+            "sha256": _file_sha256(src),
+            "copied_at": datetime.now(timezone.utc).isoformat(),
+        }
+        if source_repo:
+            entry["source_repo_id"] = source_repo.id
+            entry["source_repo_key"] = source_repo.key
+            entry["source_repo_name"] = source_repo.name
+        source_map[map_key] = entry
+        dirty = True
+        results.append(dest)
+    if dirty:
+        save_source_map(project_dir, source_map)
+    return results
+
+
 def stage_source_for_ingest(
     project_dir: str,
     source_path: str,
@@ -256,30 +354,24 @@ def stage_source_for_ingest(
     source_repo: SourceRepoMetadata | None = None,
 ) -> Path:
     """Copy a selected provider file into raw/sources and record its origin."""
-    src = Path(source_path)
-    root = Path(source_root)
-    rel = src.resolve().relative_to(root.resolve()).as_posix()
-    map_key = f"{source_repo.key}/{rel}" if source_repo else rel
-    raw_root = raw_source_root(project_dir)
-    dest = raw_root / map_key
-    if src.resolve() == dest.resolve():
-        return dest
+    return stage_sources_for_ingest(project_dir, [(source_path, source_root, source_repo)])[0]
 
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(src, dest)
-    source_map = load_source_map(project_dir)
-    source_map[map_key] = {
-        "source_path": rel,
-        "raw_source_path": f"raw/sources/{map_key}",
-        "sha256": _file_sha256(src),
-        "copied_at": datetime.now(timezone.utc).isoformat(),
-    }
-    if source_repo:
-        source_map[map_key]["source_repo_id"] = source_repo.id
-        source_map[map_key]["source_repo_key"] = source_repo.key
-        source_map[map_key]["source_repo_name"] = source_repo.name
-    save_source_map(project_dir, source_map)
-    return dest
+
+def resolve_browser_source_files(source_root: Path, source_files: list[str]) -> list[Path]:
+    """Resolve explicit browser selections without scanning the whole tree."""
+    resolved: list[Path] = []
+    for source_file in source_files:
+        src = (source_root / source_file).resolve()
+        try:
+            src.relative_to(source_root.resolve())
+        except ValueError:
+            raise ValueError(f"Invalid source file: {source_file}") from None
+        if not src.exists() or not src.is_file():
+            raise FileNotFoundError(source_file)
+        if not is_project_source_file(src, source_root):
+            raise ValueError(f"Invalid source file: {source_file}")
+        resolved.append(src)
+    return resolved
 
 
 def validate_source_pattern(pattern: str) -> str:
@@ -347,6 +439,115 @@ def _job_sort_key(job) -> datetime:
     return job.created_at or job.completed_at or datetime.min
 
 
+def is_ingest_records_request(
+    *,
+    status_filter: IngestFileStatus | None,
+    recursive: bool,
+    has_filters: bool,
+    dir: str,
+) -> bool:
+    """Compile-page tabs: list from jobs/cache only, never scan the full source tree."""
+    return (
+        status_filter is not None
+        and status_filter in INGEST_RECORD_STATUSES
+        and not recursive
+        and not has_filters
+        and not dir.strip()
+    )
+
+
+def detect_changed_identities(source_dir: Path, cache: dict[str, str]) -> set[str]:
+    """Compare cached hashes against staged raw/sources files (not the whole repo)."""
+    changed: set[str] = set()
+    for identity in cache:
+        src = source_dir / identity
+        if not src.is_file():
+            continue
+        cache_key = identity if identity in cache else src.name
+        try:
+            if content_hash(parse_document(src)) != cache[cache_key]:
+                changed.add(identity)
+        except Exception:
+            changed.add(identity)
+    return changed
+
+
+def _job_source_paths(jobs: list) -> list[str]:
+    return list({job.source_path for job in jobs})
+
+
+def build_ingest_record_page(
+    *,
+    project_dir: str,
+    jobs: list,
+    cache: dict[str, str],
+    status_filter: IngestFileStatus,
+    sort_dir: SortDirection,
+    page: int,
+    page_size: int,
+) -> IngestRecordPageResult:
+    """Fast path for compile-record tabs: jobs + ingest cache, no provider checkout scan."""
+    source_dir = local_source_root(project_dir)
+    cached = set(cache.keys())
+    job_paths = _job_source_paths(jobs)
+    changed = detect_changed_identities(source_dir, cache)
+
+    count_paths = list(
+        set(job_paths)
+        | {
+            str((source_dir / identity).resolve())
+            for identity in cached
+            if (source_dir / identity).is_file()
+        }
+    )
+    all_items = resolve_file_statuses(
+        source_paths=count_paths,
+        jobs=jobs,
+        changed_identities=changed,
+        cached_identities=cached,
+        source_root=str(source_dir),
+    )
+    counts = {key: 0 for key in ["processing", "queued", "failed", "updated", "not_queued", "compiled"]}
+    for item in all_items:
+        counts[item.status] = counts.get(item.status, 0) + 1
+
+    if status_filter in ("processing", "queued", "failed"):
+        page_source_paths = job_paths
+        page_changed: set[str] = set()
+    elif status_filter == "updated":
+        page_source_paths = [
+            str((source_dir / identity).resolve())
+            for identity in sorted(changed)
+            if (source_dir / identity).is_file()
+        ]
+        page_changed = changed
+    else:
+        page_source_paths = [
+            str((source_dir / identity).resolve())
+            for identity in sorted(cached)
+            if identity not in changed and (source_dir / identity).is_file()
+        ]
+        page_changed = changed
+
+    page_items = resolve_file_statuses(
+        source_paths=page_source_paths,
+        jobs=jobs,
+        changed_identities=page_changed,
+        cached_identities=cached,
+        source_root=str(source_dir),
+    )
+    page_items = [item for item in page_items if item.status == status_filter]
+    page_items = filter_and_sort_items(page_items, sort_dir=sort_dir)
+    page_data = paginate_items(page_items, page=page, page_size=page_size)
+    return IngestRecordPageResult(
+        items=page_data.items,
+        counts=counts,
+        total=page_data.total,
+        page=page_data.page,
+        page_size=page_data.page_size,
+    )
+
+
 def resolve_file_statuses(
     *,
     source_paths: list[str],
@@ -407,10 +608,13 @@ def resolve_file_statuses(
         else:
             status = "not_queued"
 
+        source = Path(source_path)
+        file_size = source.stat().st_size if source.is_file() else None
         items.append(
             IngestFileItem(
                 source_file=identity,
                 source_path=source_path,
+                file_size=file_size,
                 status=status,
                 job_id=getattr(job, "id", None) if job else None,
                 job_status=getattr(job, "status", None) if job else None,

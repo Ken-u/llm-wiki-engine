@@ -59,18 +59,26 @@ def test_remote_browser_preview_and_enqueue_are_scoped_by_source_repository(tmp_
 
         enqueued: list[dict[str, object]] = []
 
-        async def fake_enqueue(project_id: str, project_dir: str, source_path: str, user_id: int) -> str:
-            enqueued.append(
-                {
-                    "project_id": project_id,
-                    "project_dir": project_dir,
-                    "source_path": source_path,
-                    "user_id": user_id,
-                }
-            )
-            return f"job-{len(enqueued)}"
+        async def fake_enqueue_many(
+            project_id: str,
+            project_dir: str,
+            source_paths: list[str],
+            user_id: int,
+        ) -> list[str]:
+            job_ids: list[str] = []
+            for source_path in source_paths:
+                enqueued.append(
+                    {
+                        "project_id": project_id,
+                        "project_dir": project_dir,
+                        "source_path": source_path,
+                        "user_id": user_id,
+                    }
+                )
+                job_ids.append(f"job-{len(enqueued)}")
+            return job_ids
 
-        monkeypatch.setattr("app.ingest.router.ingest_queue.enqueue", fake_enqueue)
+        monkeypatch.setattr("app.ingest.enqueue_service.ingest_queue.enqueue_many", fake_enqueue_many)
 
         async def override_get_db():
             async with Session() as db:
