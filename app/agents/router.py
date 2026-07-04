@@ -62,6 +62,8 @@ class AgentResponse(BaseModel):
     debug_result_limit: int
     tool_labels: dict[str, str]
     project_ids: list[str]
+    skill_token_configured: bool = False
+    skill_token_created_at: datetime | None = None
     created_by: int
     created_at: datetime
 
@@ -120,6 +122,8 @@ def _agent_response(agent: Agent, project_ids: list[str]) -> AgentResponse:
         debug_result_limit=agent.debug_result_limit,
         tool_labels=_parse_tool_labels(agent),
         project_ids=project_ids,
+        skill_token_configured=bool(agent.skill_token_hash),
+        skill_token_created_at=agent.skill_token_created_at,
         created_by=agent.created_by,
         created_at=agent.created_at,
     )
@@ -278,6 +282,17 @@ async def regenerate_key(
     agent = await _get_agent_or_404(db, agent_id, user)
     raw_key = await service.regenerate_key(db, agent)
     return {"api_key": raw_key}
+
+
+@router.post("/{agent_id}/regenerate-skill-token")
+async def regenerate_skill_token(
+    agent_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    agent = await _get_agent_or_404(db, agent_id, user)
+    raw_token = await service.regenerate_skill_token(db, agent)
+    return {"skill_token": raw_token}
 
 
 @router.post("/{agent_id}/chat")
