@@ -66,7 +66,7 @@ def test_list_source_repositories_creates_default_when_empty(tmp_path):
             assert len(repos) == 1
             assert repos[0].project_id == "project-1"
             assert repos[0].key == "default"
-            assert repos[0].name == "默认源仓库"
+            assert repos[0].name == "docs"
             persisted = (
                 await db.execute(select(ProjectSourceRepository).where(ProjectSourceRepository.project_id == "project-1"))
             ).scalar_one()
@@ -130,7 +130,7 @@ def test_create_default_source_repository_copies_legacy_git_fields_and_flushes(t
             repo = await create_default_source_repository(db, project)
 
             assert repo.key == "default"
-            assert repo.name == "默认源仓库"
+            assert repo.name == "docs"
             assert repo.repo_url == "https://git.example.com/org/docs.git"
             assert repo.branch == "mainline"
             assert repo.username == "bot"

@@ -45,8 +45,19 @@ def test_auto_migrate_moves_legacy_git_config_to_publish_config(tmp_path):
                     git_sync_auto_compile, last_git_sync_status, last_git_sync_error
                 )
                 VALUES (
-                    'p1', 'ssh://gerrit/project', 'master', 'bot', 'secret',
+                    'p1', 'https://git.example.com/org/docs.git', 'master', 'bot', 'secret',
                     'Bot', 'bot@example.com', 1, 1, 'failed', 'old error'
+                )
+            """))
+            await conn.execute(text("""
+                INSERT INTO projects (
+                    id, git_repo_url, git_branch, git_username, git_auth_token,
+                    git_author_name, git_author_email, git_sync_enabled,
+                    git_sync_auto_compile, last_git_sync_status, last_git_sync_error
+                )
+                VALUES (
+                    'p2', 'git@git.example.com:org/backend-docs.git', 'main', '', '',
+                    '', '', 0, 0, 'idle', ''
                 )
             """))
             await _auto_migrate(conn)
@@ -78,12 +89,17 @@ def test_auto_migrate_moves_legacy_git_config_to_publish_config(tmp_path):
                 FROM project_source_repositories
                 WHERE project_id = 'p1' AND key = 'default'
             """))).scalar_one()
+            ssh_source_repo_name = (await conn.execute(text("""
+                SELECT name
+                FROM project_source_repositories
+                WHERE project_id = 'p2' AND key = 'default'
+            """))).scalar_one()
         await engine.dispose()
-        return row, marker, source_marker, source_repo, source_repo_count
+        return row, marker, source_marker, source_repo, source_repo_count, ssh_source_repo_name
 
-    row, marker, source_marker, source_repo, source_repo_count = asyncio.run(run())
+    row, marker, source_marker, source_repo, source_repo_count, ssh_source_repo_name = asyncio.run(run())
 
-    assert row["publish_repo_url"] == "ssh://gerrit/project"
+    assert row["publish_repo_url"] == "https://git.example.com/org/docs.git"
     assert row["publish_branch"] == "master"
     assert row["publish_username"] == "bot"
     assert row["publish_auth_token"] == "secret"
@@ -101,8 +117,8 @@ def test_auto_migrate_moves_legacy_git_config_to_publish_config(tmp_path):
     assert source_marker == "{}"
     assert source_repo["project_id"] == "p1"
     assert source_repo["key"] == "default"
-    assert source_repo["name"] == "默认源仓库"
-    assert source_repo["repo_url"] == "ssh://gerrit/project"
+    assert source_repo["name"] == "docs"
+    assert source_repo["repo_url"] == "https://git.example.com/org/docs.git"
     assert source_repo["branch"] == "master"
     assert source_repo["username"] == "bot"
     assert source_repo["auth_token"] == "secret"
@@ -114,3 +130,4 @@ def test_auto_migrate_moves_legacy_git_config_to_publish_config(tmp_path):
     assert source_repo["last_sync_status"] == "failed"
     assert source_repo["last_sync_error"] == "old error"
     assert source_repo_count == 1
+    assert ssh_source_repo_name == "backend-docs"

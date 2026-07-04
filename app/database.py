@@ -215,6 +215,50 @@ async def _migrate_legacy_git_config_to_source_repositories(conn) -> None:
 
     result = await conn.execute(
         sqlalchemy.text("""
+            WITH legacy_projects AS (
+                SELECT
+                    p.*,
+                    CASE
+                        WHEN instr(trim(p.git_repo_url), '/') > 0 THEN trim(p.git_repo_url)
+                        WHEN instr(trim(p.git_repo_url), ':') > 0 THEN substr(trim(p.git_repo_url), instr(trim(p.git_repo_url), ':') + 1)
+                        ELSE trim(p.git_repo_url)
+                    END AS split_source
+                FROM projects p
+                WHERE COALESCE(p.git_repo_url, '') != ''
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM project_source_repositories existing
+                      WHERE existing.project_id = p.id
+                        AND existing.key = 'default'
+                  )
+            ),
+            name_parts(project_id, rest, segment) AS (
+                SELECT
+                    id,
+                    split_source || '/',
+                    ''
+                FROM legacy_projects
+                UNION ALL
+                SELECT
+                    project_id,
+                    substr(rest, instr(rest, '/') + 1),
+                    substr(rest, 1, instr(rest, '/') - 1)
+                FROM name_parts
+                WHERE rest != ''
+            ),
+            inferred_names AS (
+                SELECT
+                    project_id,
+                    CASE
+                        WHEN segment LIKE '%.git' AND substr(segment, 1, length(segment) - 4) != ''
+                            THEN substr(segment, 1, length(segment) - 4)
+                        WHEN segment != ''
+                            THEN segment
+                        ELSE '默认源仓库'
+                    END AS repo_name
+                FROM name_parts
+                WHERE rest = ''
+            )
             INSERT INTO project_source_repositories (
                 id, project_id, key, name, repo_url, branch, username, auth_token,
                 author_name, author_email, sync_enabled, auto_compile, sync_time,
@@ -228,7 +272,7 @@ async def _migrate_legacy_git_config_to_source_repositories(conn) -> None:
                     lower(hex(randomblob(6))),
                 p.id,
                 'default',
-                '默认源仓库',
+                inferred_names.repo_name,
                 p.git_repo_url,
                 COALESCE(NULLIF(p.git_branch, ''), 'main'),
                 p.git_username,
@@ -241,14 +285,8 @@ async def _migrate_legacy_git_config_to_source_repositories(conn) -> None:
                 p.last_git_sync_at,
                 COALESCE(NULLIF(p.last_git_sync_status, ''), 'idle'),
                 p.last_git_sync_error
-            FROM projects p
-            WHERE COALESCE(p.git_repo_url, '') != ''
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM project_source_repositories existing
-                  WHERE existing.project_id = p.id
-                    AND existing.key = 'default'
-              )
+            FROM legacy_projects p
+            JOIN inferred_names ON inferred_names.project_id = p.id
         """)
     )
     await conn.execute(

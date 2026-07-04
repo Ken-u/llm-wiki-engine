@@ -83,7 +83,7 @@ async def create_default_source_repository(
         id=str(uuid.uuid4()),
         project_id=project.id,
         key=DEFAULT_SOURCE_REPO_KEY,
-        name=DEFAULT_SOURCE_REPO_NAME,
+        name=infer_repo_name(project.git_repo_url or ""),
         repo_url=project.git_repo_url or "",
         branch=project.git_branch or "main",
         username=project.git_username or "",
