@@ -37,6 +37,7 @@ def test_source_repository_api_routes_are_registered():
     assert ("POST", "/api/projects/{project_id}/source-repositories/{repo_id}/test") in _route_paths()
     assert ("POST", "/api/projects/{project_id}/source-repositories/{repo_id}/sync") in _route_paths()
     assert ("POST", "/api/projects/{project_id}/source-repositories/sync-all") in _route_paths()
+    assert ("POST", "/api/projects/{project_id}/source-repositories/{repo_id}/manual-git/exec") in _route_paths()
 
 
 def test_source_repository_crud_api_hides_auth_and_enforces_owner_permissions(tmp_path):

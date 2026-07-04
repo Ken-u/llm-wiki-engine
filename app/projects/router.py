@@ -121,6 +121,11 @@ class SourceRepositoryUpdateRequest(BaseModel):
     sync_enabled: bool | None = None
     auto_compile: bool | None = None
     sync_time: str | None = None
+    manual_git_mode: bool | None = None
+
+
+class ManualGitExecRequest(BaseModel):
+    command: str = Field(min_length=1, max_length=4000)
 
 
 class SourceRepositoryResponse(BaseModel):
@@ -139,6 +144,7 @@ class SourceRepositoryResponse(BaseModel):
     last_sync_at: datetime | None = None
     last_sync_status: str = "idle"
     last_sync_error: str = ""
+    manual_git_mode: bool = False
     auth_configured: bool = False
     created_at: datetime | None = None
     updated_at: datetime | None = None
@@ -234,6 +240,7 @@ def _build_source_repository_response(repo) -> SourceRepositoryResponse:
         last_sync_at=repo.last_sync_at,
         last_sync_status=repo.last_sync_status,
         last_sync_error=repo.last_sync_error,
+        manual_git_mode=repo.manual_git_mode,
         auth_configured=bool(repo.auth_token),
         created_at=repo.created_at,
         updated_at=repo.updated_at,
@@ -483,8 +490,32 @@ async def update_project_source_repository(
         kwargs["auth_token"] = body.auth_token
     if "clear_auth_token" in body.model_fields_set and body.clear_auth_token:
         kwargs["auth_token"] = ""
+
+    next_manual_mode = (
+        body.manual_git_mode if "manual_git_mode" in body.model_fields_set else repo.manual_git_mode
+    )
+    next_sync_enabled = (
+        body.sync_enabled if "sync_enabled" in body.model_fields_set else repo.sync_enabled
+    )
+
+    if body.manual_git_mode is True and not repo.manual_git_mode:
+        kwargs["sync_enabled_before_manual"] = repo.sync_enabled
+        kwargs["sync_enabled"] = False
+    elif body.manual_git_mode is False and repo.manual_git_mode:
+        kwargs["sync_enabled"] = repo.sync_enabled_before_manual
+        kwargs["sync_enabled_before_manual"] = False
+
+    effective_sync_enabled = (
+        kwargs["sync_enabled"] if "sync_enabled" in kwargs else next_sync_enabled
+    )
+    if next_manual_mode and effective_sync_enabled:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "手动 Git 模式与自动同步不能同时启用，请先退出手动 Git 模式",
+        )
+
     repo = await source_repo_service.update_source_repository(db, repo, **kwargs)
-    schedule_fields = {"sync_enabled", "sync_time"}
+    schedule_fields = {"sync_enabled", "sync_time", "manual_git_mode"}
     if schedule_fields & body.model_fields_set:
         _schedule_sync_jobs_refresh()
     return _build_source_repository_response(repo)
@@ -533,6 +564,11 @@ async def trigger_source_repository_sync(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "未配置 Git 仓库")
     if not repo.auth_token:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "未配置 Git 访问凭证")
+    if repo.manual_git_mode:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "源仓库处于手动 Git 模式，请先退出后再同步",
+        )
     from app.projects.git_sync import sync_source_repository, _get_sync_lock
     lock = _get_sync_lock(f"{project_id}:{repo_id}")
     if lock.locked():
@@ -556,6 +592,31 @@ async def trigger_all_source_repositories_sync(
     from app.projects.git_sync import sync_all_source_repositories
     asyncio.create_task(sync_all_source_repositories(project_id, triggered_by=user.id, source="manual"))
     return {"status": "started"}
+
+
+@router.post("/{project_id}/source-repositories/{repo_id}/manual-git/exec")
+async def execute_source_repository_manual_git(
+    project_id: str,
+    repo_id: str,
+    body: ManualGitExecRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await service.check_membership(db, project_id, user, require="owner")
+    proj = await service.get_project_or_404(db, project_id)
+    repo = await source_repo_service.get_source_repository_or_404(db, proj, repo_id)
+    if not repo.manual_git_mode:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "请先启用手动 Git 模式后再执行命令",
+        )
+    from app.projects.git_sync import execute_source_repository_git_command
+    try:
+        return await execute_source_repository_git_command(proj, repo, body.command)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
 
 
 @router.post("/{project_id}/git/test")

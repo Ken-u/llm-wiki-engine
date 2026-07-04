@@ -156,6 +156,8 @@ async def _auto_migrate(conn) -> None:
         ("projects", "knowledge_agent_id", "TEXT DEFAULT NULL REFERENCES agents(id) ON DELETE SET NULL"),
         ("projects", "project_type", "TEXT DEFAULT 'knowledge_base'"),
         ("projects", "case_index_auto_rebuild", "BOOLEAN DEFAULT 0"),
+        ("project_source_repositories", "manual_git_mode", "BOOLEAN DEFAULT 0"),
+        ("project_source_repositories", "sync_enabled_before_manual", "BOOLEAN DEFAULT 0"),
     ]
 
     for table, column, col_type in migrations:
@@ -187,6 +189,8 @@ async def _auto_migrate(conn) -> None:
             last_sync_at DATETIME DEFAULT NULL,
             last_sync_status TEXT DEFAULT 'idle',
             last_sync_error TEXT DEFAULT '',
+            manual_git_mode BOOLEAN DEFAULT 0,
+            sync_enabled_before_manual BOOLEAN DEFAULT 0,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(project_id, key)

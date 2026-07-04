@@ -717,3 +717,46 @@ def test_commit_and_publish_uses_separate_remote_without_changing_origin(tmp_pat
     assert ".llm-wiki/source-repos/" in published_gitignore
     assert ".llm-wiki/chats/" in published_gitignore
     assert ".llm-wiki/checkpoints/" in published_gitignore
+
+
+def test_parse_git_command_segments_accepts_chained_git_commands():
+    from app.projects.git_sync import _parse_git_command_segments
+
+    segments = _parse_git_command_segments(
+        "git fetch ssh://user@host/repo refs/changes/32/307232/1 && git checkout FETCH_HEAD"
+    )
+    assert segments == [
+        ["fetch", "ssh://user@host/repo", "refs/changes/32/307232/1"],
+        ["checkout", "FETCH_HEAD"],
+    ]
+
+
+def test_parse_git_command_segments_rejects_shell_injection():
+    from app.projects.git_sync import _parse_git_command_segments
+    import pytest
+
+    with pytest.raises(ValueError, match="git"):
+        _parse_git_command_segments("ls -la")
+    with pytest.raises(ValueError, match="shell"):
+        _parse_git_command_segments("git status; rm -rf /")
+
+
+def test_run_git_segments_stops_on_failure(tmp_path, monkeypatch):
+    from app.projects.git_sync import _run_git_segments
+
+    checkout = tmp_path / "repo"
+    checkout.mkdir()
+    subprocess.run(["git", "init"], cwd=checkout, check=True, capture_output=True)
+
+    calls: list[list[str]] = []
+
+    def fake_run_git(args, *, cwd=None, check=True):
+        calls.append(args)
+        result = subprocess.CompletedProcess(args, 0 if args[0] == "status" else 1, "", "failed")
+        return result
+
+    monkeypatch.setattr("app.projects.git_sync._run_git", fake_run_git)
+    output = _run_git_segments([["status"], ["checkout", "missing"]], cwd=str(checkout))
+    assert output["ok"] is False
+    assert output["exit_code"] == 1
+    assert len(calls) == 2

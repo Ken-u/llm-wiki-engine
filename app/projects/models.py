@@ -98,5 +98,7 @@ class ProjectSourceRepository(Base):
     last_sync_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
     last_sync_status: Mapped[str] = mapped_column(String(16), default="idle", server_default="idle")
     last_sync_error: Mapped[str] = mapped_column(Text, default="", server_default="")
+    manual_git_mode: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    sync_enabled_before_manual: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())

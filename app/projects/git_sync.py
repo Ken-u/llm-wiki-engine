@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
+import shlex
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -109,6 +111,103 @@ def _ensure_branch_checkout(root: Path, branch: str) -> None:
         or f"HEAD is {_head_ref(root) or 'missing'}"
     )
     raise RuntimeError(f"failed to checkout branch '{branch}': {detail}")
+
+
+_FORBIDDEN_SHELL_PATTERN = re.compile(r"[;|><`$\\]|&&&|\n|\r")
+_GIT_SEGMENT_RE = re.compile(r"^git\s+", re.IGNORECASE)
+
+
+def _parse_git_command_segments(command: str) -> list[list[str]]:
+    """Split a chained git command into argv lists. Only git subcommands are allowed."""
+    raw = command.strip()
+    if not raw:
+        raise ValueError("命令不能为空")
+    if _FORBIDDEN_SHELL_PATTERN.search(raw):
+        raise ValueError("仅支持 git 命令，可使用 && 连接，不支持其他 shell 语法")
+
+    segments: list[list[str]] = []
+    for part in raw.split("&&"):
+        segment = part.strip()
+        if not segment:
+            raise ValueError("命令片段不能为空")
+        if not _GIT_SEGMENT_RE.match(segment):
+            raise ValueError("每条命令必须以 git 开头")
+        args = shlex.split(segment[3:].strip(), posix=True)
+        if not args:
+            raise ValueError("空的 git 命令")
+        segments.append(args)
+    return segments
+
+
+def _ensure_repo_clone_only(project: Project, source_repo: ProjectSourceRepository) -> Path:
+    """Clone the source repository if missing, without resetting an existing checkout."""
+    root = source_repo_checkout_root(project, source_repo)
+    if (root / ".git").exists():
+        return root
+
+    repo_url = source_repo.repo_url
+    auth_token = source_repo.auth_token
+    username = source_repo.username
+    branch = source_repo.branch or "main"
+    if not repo_url:
+        raise RuntimeError("未配置仓库 URL")
+
+    authed_url = _inject_auth(repo_url, auth_token, username=username)
+    root.mkdir(parents=True, exist_ok=True)
+    result = _run_git(
+        ["clone", "--branch", branch, "--single-branch", authed_url, str(root)],
+        check=False,
+    )
+    if result.returncode != 0:
+        import shutil
+        shutil.rmtree(root, ignore_errors=True)
+        root.mkdir(parents=True, exist_ok=True)
+        _run_git(["clone", authed_url, str(root)])
+    _ensure_branch_checkout(root, branch)
+    logger.info("Cloned source repo %s (%s) -> %s", repo_url, branch, root)
+    return root
+
+
+def _run_git_segments(segments: list[list[str]], *, cwd: str) -> dict:
+    """Run git command segments sequentially in the given working directory."""
+    combined_stdout: list[str] = []
+    combined_stderr: list[str] = []
+    last_exit = 0
+
+    for args in segments:
+        result = _run_git(args, cwd=cwd, check=False)
+        if result.stdout:
+            combined_stdout.append(result.stdout.rstrip("\n"))
+        if result.stderr:
+            combined_stderr.append(result.stderr.rstrip("\n"))
+        last_exit = result.returncode
+        if last_exit != 0:
+            break
+
+    stdout = "\n".join(combined_stdout)
+    stderr = "\n".join(combined_stderr)
+    return {
+        "ok": last_exit == 0,
+        "exit_code": last_exit,
+        "stdout": stdout,
+        "stderr": stderr,
+        "error": "" if last_exit == 0 else (stderr or stdout or f"git 命令失败 (exit {last_exit})")[:500],
+    }
+
+
+async def execute_source_repository_git_command(
+    project: Project,
+    source_repo: ProjectSourceRepository,
+    command: str,
+) -> dict:
+    """Execute manual git commands in a source repository checkout."""
+    if not source_repo.manual_git_mode:
+        raise RuntimeError("请先启用手动 Git 模式")
+
+    segments = _parse_git_command_segments(command)
+    loop = asyncio.get_event_loop()
+    root = await loop.run_in_executor(None, lambda: _ensure_repo_clone_only(project, source_repo))
+    return await loop.run_in_executor(None, lambda: _run_git_segments(segments, cwd=str(root)))
 
 
 def _ensure_repo(project: Project, source_repo: ProjectSourceRepository | None = None) -> None:
@@ -461,6 +560,9 @@ async def sync_source_repository(
                 await db.commit()
                 raise RuntimeError("Git 配置不完整")
 
+            if source_repo.manual_git_mode:
+                raise RuntimeError("源仓库处于手动 Git 模式，请先退出后再同步")
+
             source_repo.last_sync_status = "syncing"
             source_repo.last_sync_error = ""
             if source_repo.key == DEFAULT_SOURCE_REPO_KEY:
@@ -675,6 +777,7 @@ async def register_sync_jobs() -> None:
             select(Project, ProjectSourceRepository)
             .join(ProjectSourceRepository, ProjectSourceRepository.project_id == Project.id)
             .where(ProjectSourceRepository.sync_enabled == True)  # noqa: E712
+            .where(ProjectSourceRepository.manual_git_mode == False)  # noqa: E712
         )
         rows = list((await db.execute(stmt)).all())
 
