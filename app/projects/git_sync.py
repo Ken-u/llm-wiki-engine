@@ -188,12 +188,14 @@ def _publish_remote_name() -> str:
 
 _PUBLISH_GITIGNORE_LINES = [
     ".llm-wiki/source-repo/",
+    ".llm-wiki/source-repos/",
     ".llm-wiki/chats/",
     ".llm-wiki/checkpoints/",
 ]
 
 _PUBLISH_IGNORED_PATHS = [
     ".llm-wiki/source-repo",
+    ".llm-wiki/source-repos",
     ".llm-wiki/chats",
     ".llm-wiki/checkpoints",
 ]
@@ -430,6 +432,13 @@ async def sync_source_repository(
                 raise RuntimeError(f"Source repository {repo_id} not found")
 
             if not source_repo.repo_url or not source_repo.auth_token:
+                error = "Git 配置不完整"
+                source_repo.last_sync_status = "failed"
+                source_repo.last_sync_error = error
+                if source_repo.key == DEFAULT_SOURCE_REPO_KEY:
+                    project.last_git_sync_status = "failed"
+                    project.last_git_sync_error = error
+                await db.commit()
                 raise RuntimeError("Git 配置不完整")
 
             source_repo.last_sync_status = "syncing"

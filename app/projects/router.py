@@ -537,10 +537,8 @@ async def trigger_all_source_repositories_sync(
     await service.check_membership(db, project_id, user, require="owner")
     proj = await service.get_project_or_404(db, project_id)
     repos = await source_repo_service.list_source_repositories(db, proj)
-    if any(not repo.repo_url for repo in repos):
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "存在未配置 Git 仓库的源仓库")
-    if any(not repo.auth_token for repo in repos):
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "存在未配置 Git 访问凭证的源仓库")
+    if not repos:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "未配置源仓库")
     from app.projects.git_sync import sync_all_source_repositories
     asyncio.create_task(sync_all_source_repositories(project_id, triggered_by=user.id, source="manual"))
     return {"status": "started"}
@@ -570,8 +568,9 @@ async def trigger_git_sync(
     proj = await service.get_project_or_404(db, project_id)
     if not proj.git_repo_url:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "未配置 Git 仓库")
+    default_repo = await source_repo_service.create_default_source_repository(db, proj)
     from app.projects.git_sync import sync_project_from_git, _get_sync_lock
-    lock = _get_sync_lock(project_id)
+    lock = _get_sync_lock(f"{project_id}:{default_repo.id}")
     if lock.locked():
         raise HTTPException(status.HTTP_409_CONFLICT, "该项目已有同步正在执行")
     asyncio.create_task(sync_project_from_git(project_id, triggered_by=user.id, source="manual"))

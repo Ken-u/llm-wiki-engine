@@ -235,6 +235,139 @@ def test_register_sync_jobs_uses_source_repository_job_ids(tmp_path, monkeypatch
     asyncio.run(run())
 
 
+def test_sync_source_repository_marks_missing_config_failed(tmp_path, monkeypatch):
+    async def run():
+        from sqlalchemy import select
+        from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+        from app.agents.models import Agent  # noqa: F401
+        from app.auth.models import User
+        from app.database import Base
+        from app.projects.models import Project, ProjectSourceRepository
+
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'missing-config.db'}")
+        Session = async_sessionmaker(engine, expire_on_commit=False)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        async with Session() as db:
+            db.add(User(id=1, username="owner", password_hash="x", role="user"))
+            db.add(Project(id="project-1", name="Project", slug="project", description="", created_by=1))
+            db.add(ProjectSourceRepository(
+                id="repo-1",
+                project_id="project-1",
+                key="docs",
+                name="Docs",
+                repo_url="",
+                auth_token="",
+            ))
+            await db.commit()
+
+        monkeypatch.setattr(git_sync, "async_session", Session)
+
+        try:
+            await git_sync.sync_source_repository("project-1", "repo-1", triggered_by=1)
+        except RuntimeError as exc:
+            assert "Git 配置不完整" in str(exc)
+        else:
+            raise AssertionError("sync_source_repository should reject missing Git config")
+
+        async with Session() as db:
+            repo = (
+                await db.execute(select(ProjectSourceRepository).where(ProjectSourceRepository.id == "repo-1"))
+            ).scalar_one()
+            assert repo.last_sync_status == "failed"
+            assert "Git 配置不完整" in repo.last_sync_error
+
+        await engine.dispose()
+
+    import asyncio
+
+    asyncio.run(run())
+
+
+def test_sync_all_source_repositories_records_bad_repo_and_continues(tmp_path, monkeypatch):
+    async def run():
+        from sqlalchemy import select
+        from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+        from app.agents.models import Agent  # noqa: F401
+        from app.auth.models import User
+        from app.database import Base
+        from app.projects.models import Project, ProjectSourceRepository
+
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'sync-all.db'}")
+        Session = async_sessionmaker(engine, expire_on_commit=False)
+        project_dir = tmp_path / "project-dir"
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        async with Session() as db:
+            db.add(User(id=1, username="owner", password_hash="x", role="user"))
+            db.add(Project(
+                id="project-1",
+                name="Project",
+                slug="project",
+                description="",
+                created_by=1,
+                git_sync_auto_compile=False,
+            ))
+            db.add_all([
+                ProjectSourceRepository(
+                    id="bad-repo",
+                    project_id="project-1",
+                    key="bad",
+                    name="Bad",
+                    repo_url="",
+                    auth_token="",
+                ),
+                ProjectSourceRepository(
+                    id="good-repo",
+                    project_id="project-1",
+                    key="good",
+                    name="Good",
+                    repo_url="https://git.example.com/org/good.git",
+                    auth_token="secret",
+                ),
+            ])
+            await db.commit()
+
+        def fake_disk_path(self):
+            return str(project_dir)
+
+        def fake_ensure_repo(project, source_repo):
+            root = source_repo_checkout_root(project, source_repo)
+            root.mkdir(parents=True, exist_ok=True)
+            (root / "README.md").write_text("hello\n", encoding="utf-8")
+
+        monkeypatch.setattr(git_sync, "async_session", Session)
+        monkeypatch.setattr(Project, "disk_path", property(fake_disk_path))
+        monkeypatch.setattr(git_sync, "_ensure_repo", fake_ensure_repo)
+
+        results = await git_sync.sync_all_source_repositories("project-1", triggered_by=1)
+
+        assert [result["repo_id"] for result in results] == ["bad-repo", "good-repo"]
+        assert results[0]["status"] == "failed"
+        assert results[1]["status"] == "success"
+
+        async with Session() as db:
+            repos = {
+                repo.id: repo
+                for repo in (
+                    await db.execute(select(ProjectSourceRepository).order_by(ProjectSourceRepository.id))
+                ).scalars().all()
+            }
+            assert repos["bad-repo"].last_sync_status == "failed"
+            assert "Git 配置不完整" in repos["bad-repo"].last_sync_error
+            assert repos["good-repo"].last_sync_status == "success"
+
+        await engine.dispose()
+
+    import asyncio
+
+    asyncio.run(run())
+
+
 def test_ensure_repo_remote_default_branch_differs_from_target_branch(tmp_path):
     remote = tmp_path / "remote.git"
     subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True, text=True)
@@ -318,6 +451,8 @@ def test_commit_and_publish_uses_separate_remote_without_changing_origin(tmp_pat
     (worktree / "README.md").write_text("hello\n", encoding="utf-8")
     (worktree / ".llm-wiki" / "source-repo").mkdir(parents=True)
     (worktree / ".llm-wiki" / "source-repo" / "provider.md").write_text("provider\n", encoding="utf-8")
+    (worktree / ".llm-wiki" / "source-repos" / "frontend").mkdir(parents=True)
+    (worktree / ".llm-wiki" / "source-repos" / "frontend" / "provider.md").write_text("provider\n", encoding="utf-8")
     (worktree / ".llm-wiki" / "chats").mkdir(parents=True)
     (worktree / ".llm-wiki" / "chats" / "chat.json").write_text("{}", encoding="utf-8")
     (worktree / ".llm-wiki" / "checkpoints").mkdir(parents=True)
@@ -370,6 +505,7 @@ def test_commit_and_publish_uses_separate_remote_without_changing_origin(tmp_pat
     assert ".gitignore" in published_files
     assert ".llm-wiki/source-map.json" in published_files
     assert ".llm-wiki/source-repo/provider.md" not in published_files
+    assert ".llm-wiki/source-repos/frontend/provider.md" not in published_files
     assert ".llm-wiki/chats/chat.json" not in published_files
     assert ".llm-wiki/checkpoints/job.json" not in published_files
     published_gitignore = subprocess.run(
@@ -379,5 +515,6 @@ def test_commit_and_publish_uses_separate_remote_without_changing_origin(tmp_pat
         text=True,
     ).stdout
     assert ".llm-wiki/source-repo/" in published_gitignore
+    assert ".llm-wiki/source-repos/" in published_gitignore
     assert ".llm-wiki/chats/" in published_gitignore
     assert ".llm-wiki/checkpoints/" in published_gitignore
