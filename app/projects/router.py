@@ -396,6 +396,7 @@ async def delete_project(
     await service.check_membership(db, project_id, user, require="owner")
     proj = await service.get_project_or_404(db, project_id)
     await service.delete_project(db, proj)
+    _schedule_sync_jobs_refresh()
 
 
 @router.post("/{project_id}/members", response_model=MemberResponse, status_code=status.HTTP_201_CREATED)

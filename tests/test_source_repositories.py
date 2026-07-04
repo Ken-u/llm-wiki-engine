@@ -276,6 +276,44 @@ def test_source_repository_create_enabled_and_delete_refresh_sync_jobs(monkeypat
     asyncio.run(run())
 
 
+def test_project_delete_refreshes_sync_jobs(monkeypatch):
+    async def run():
+        from app.projects import router as projects_router
+
+        refresh_calls = 0
+
+        def fake_schedule_sync_jobs_refresh():
+            nonlocal refresh_calls
+            refresh_calls += 1
+
+        async def fake_check_membership(db, project_id, user, require=None):
+            assert require == "owner"
+            return None
+
+        async def fake_get_project_or_404(db, project_id):
+            return SimpleNamespace(id=project_id)
+
+        async def fake_delete_project(db, project):
+            return None
+
+        monkeypatch.setattr(projects_router.service, "check_membership", fake_check_membership)
+        monkeypatch.setattr(projects_router.service, "get_project_or_404", fake_get_project_or_404)
+        monkeypatch.setattr(projects_router.service, "delete_project", fake_delete_project)
+        monkeypatch.setattr(projects_router, "_schedule_sync_jobs_refresh", fake_schedule_sync_jobs_refresh)
+
+        await projects_router.delete_project(
+            "project-1",
+            user=SimpleNamespace(id=1),
+            db=object(),
+        )
+
+        assert refresh_calls == 1
+
+    import asyncio
+
+    asyncio.run(run())
+
+
 def test_project_git_patch_updates_existing_default_source_repository(tmp_path, monkeypatch):
     async def run():
         from app.projects import router as projects_router
