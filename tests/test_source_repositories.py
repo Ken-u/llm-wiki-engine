@@ -152,7 +152,7 @@ def test_create_default_source_repository_copies_legacy_git_fields_and_flushes(t
     asyncio.run(run())
 
 
-def test_get_source_repository_or_404_scopes_to_project_and_raises_404(tmp_path):
+def test_get_source_repository_or_404_uses_id_and_scopes_to_project(tmp_path):
     async def run():
         engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'repos.db'}")
         Session = async_sessionmaker(engine, expire_on_commit=False)
@@ -163,13 +163,19 @@ def test_get_source_repository_or_404_scopes_to_project_and_raises_404(tmp_path)
             db.add(User(id=1, username="owner", password_hash="x", role="user"))
             project = Project(id="project-1", name="One", slug="one", description="", created_by=1)
             other_project = Project(id="project-2", name="Two", slug="two", description="", created_by=1)
+            repo = ProjectSourceRepository(
+                id="repo-1",
+                project_id="project-1",
+                key="default",
+                name="Default",
+            )
             other_repo = ProjectSourceRepository(
                 id="repo-2",
                 project_id="project-2",
                 key="default",
                 name="Other default",
             )
-            db.add_all([project, other_project, other_repo])
+            db.add_all([project, other_project, repo, other_repo])
             await db.commit()
 
             with pytest.raises(HTTPException) as exc:
@@ -177,10 +183,16 @@ def test_get_source_repository_or_404_scopes_to_project_and_raises_404(tmp_path)
 
             assert exc.value.status_code == 404
             assert exc.value.detail == "Source repository not found"
-            created = (
-                await db.execute(select(ProjectSourceRepository).where(ProjectSourceRepository.project_id == "project-1"))
-            ).scalars().all()
-            assert created == []
+
+            with pytest.raises(HTTPException) as other_exc:
+                await get_source_repository_or_404(db, project, "repo-2")
+
+            assert other_exc.value.status_code == 404
+            assert other_exc.value.detail == "Source repository not found"
+
+            found = await get_source_repository_or_404(db, project, "repo-1")
+            assert found.id == "repo-1"
+            assert found.project_id == "project-1"
 
         await engine.dispose()
 

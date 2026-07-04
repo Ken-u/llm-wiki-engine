@@ -50,6 +50,7 @@ def test_auto_migrate_moves_legacy_git_config_to_publish_config(tmp_path):
                 )
             """))
             await _auto_migrate(conn)
+            await _auto_migrate(conn)
             row = (await conn.execute(text("""
                 SELECT
                     git_repo_url, git_username, git_auth_token, git_sync_enabled,
@@ -61,10 +62,26 @@ def test_auto_migrate_moves_legacy_git_config_to_publish_config(tmp_path):
             marker = (await conn.execute(text("""
                 SELECT data FROM system_settings WHERE section = 'migration:legacy_git_to_publish'
             """))).scalar_one()
+            source_marker = (await conn.execute(text("""
+                SELECT data FROM system_settings WHERE section = 'migration:legacy_git_to_source_repositories'
+            """))).scalar_one()
+            source_repo = (await conn.execute(text("""
+                SELECT
+                    project_id, key, name, repo_url, branch, username, auth_token,
+                    author_name, author_email, sync_enabled, auto_compile,
+                    sync_time, last_sync_status, last_sync_error
+                FROM project_source_repositories
+                WHERE project_id = 'p1' AND key = 'default'
+            """))).mappings().one()
+            source_repo_count = (await conn.execute(text("""
+                SELECT COUNT(*)
+                FROM project_source_repositories
+                WHERE project_id = 'p1' AND key = 'default'
+            """))).scalar_one()
         await engine.dispose()
-        return row, marker
+        return row, marker, source_marker, source_repo, source_repo_count
 
-    row, marker = asyncio.run(run())
+    row, marker, source_marker, source_repo, source_repo_count = asyncio.run(run())
 
     assert row["publish_repo_url"] == "ssh://gerrit/project"
     assert row["publish_branch"] == "master"
@@ -81,3 +98,19 @@ def test_auto_migrate_moves_legacy_git_config_to_publish_config(tmp_path):
     assert row["last_git_sync_status"] == "idle"
     assert row["last_git_sync_error"] == ""
     assert marker == "{}"
+    assert source_marker == "{}"
+    assert source_repo["project_id"] == "p1"
+    assert source_repo["key"] == "default"
+    assert source_repo["name"] == "默认源仓库"
+    assert source_repo["repo_url"] == "ssh://gerrit/project"
+    assert source_repo["branch"] == "master"
+    assert source_repo["username"] == "bot"
+    assert source_repo["auth_token"] == "secret"
+    assert source_repo["author_name"] == "Bot"
+    assert source_repo["author_email"] == "bot@example.com"
+    assert source_repo["sync_enabled"] == 1
+    assert source_repo["auto_compile"] == 1
+    assert source_repo["sync_time"] == "02:00"
+    assert source_repo["last_sync_status"] == "failed"
+    assert source_repo["last_sync_error"] == "old error"
+    assert source_repo_count == 1

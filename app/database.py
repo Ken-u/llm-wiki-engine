@@ -194,7 +194,68 @@ async def _auto_migrate(conn) -> None:
     """))
 
     await _ensure_system_settings_table(conn)
+    await _migrate_legacy_git_config_to_source_repositories(conn)
     await _migrate_legacy_git_config_to_publish(conn)
+
+
+async def _migrate_legacy_git_config_to_source_repositories(conn) -> None:
+    """Create default source repositories from legacy project.git_* config."""
+    import logging
+    import sqlalchemy
+    logger = logging.getLogger(__name__)
+    marker = "migration:legacy_git_to_source_repositories"
+    existing = (
+        await conn.execute(
+            sqlalchemy.text("SELECT data FROM system_settings WHERE section = :section"),
+            {"section": marker},
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        return
+
+    result = await conn.execute(
+        sqlalchemy.text("""
+            INSERT INTO project_source_repositories (
+                id, project_id, key, name, repo_url, branch, username, auth_token,
+                author_name, author_email, sync_enabled, auto_compile, sync_time,
+                last_sync_at, last_sync_status, last_sync_error
+            )
+            SELECT
+                lower(hex(randomblob(4))) || '-' ||
+                    lower(hex(randomblob(2))) || '-' ||
+                    lower(hex(randomblob(2))) || '-' ||
+                    lower(hex(randomblob(2))) || '-' ||
+                    lower(hex(randomblob(6))),
+                p.id,
+                'default',
+                '默认源仓库',
+                p.git_repo_url,
+                COALESCE(NULLIF(p.git_branch, ''), 'main'),
+                p.git_username,
+                p.git_auth_token,
+                p.git_author_name,
+                p.git_author_email,
+                p.git_sync_enabled,
+                p.git_sync_auto_compile,
+                COALESCE(NULLIF(p.git_sync_time, ''), '02:00'),
+                p.last_git_sync_at,
+                COALESCE(NULLIF(p.last_git_sync_status, ''), 'idle'),
+                p.last_git_sync_error
+            FROM projects p
+            WHERE COALESCE(p.git_repo_url, '') != ''
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM project_source_repositories existing
+                  WHERE existing.project_id = p.id
+                    AND existing.key = 'default'
+              )
+        """)
+    )
+    await conn.execute(
+        sqlalchemy.text("INSERT INTO system_settings(section, data) VALUES (:section, :data)"),
+        {"section": marker, "data": "{}"},
+    )
+    logger.info("Migrated legacy Git config to default source repositories for %d projects", result.rowcount or 0)
 
 
 async def _migrate_legacy_git_config_to_publish(conn) -> None:

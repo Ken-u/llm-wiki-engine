@@ -106,14 +106,13 @@ async def create_default_source_repository(
 async def get_source_repository_or_404(
     db: AsyncSession,
     project: Project,
-    repo_key: str,
+    repo_id: str,
 ) -> ProjectSourceRepository:
-    key = normalize_source_repo_key(repo_key)
     repo = (
         await db.execute(
             select(ProjectSourceRepository).where(
                 ProjectSourceRepository.project_id == project.id,
-                ProjectSourceRepository.key == key,
+                ProjectSourceRepository.id == repo_id,
             )
         )
     ).scalar_one_or_none()
