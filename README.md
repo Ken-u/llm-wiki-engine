@@ -68,6 +68,37 @@ uv run python -m app.runtime_main --config ./runtime-config.yaml
 
 默认地址：http://127.0.0.1:8012
 
+Runtime 也可以直接从普通 zip bundle 启动。bundle 是 `.llmwiki-bundle` 或 `.zip` 文件，内部可包含 `runtime-config.yaml`、`data/knowledge`、`data/cases` 和 `hooks`。启动时 Runtime 会安全解压到本地缓存目录并加载配置：
+
+```bash
+uv run python -m app.runtime_main --bundle ./dist/customer.llmwiki-bundle
+```
+
+生成 bundle：
+
+```bash
+./scripts/build-runtime-bundle.sh \
+  --knowledge ./data/knowledge \
+  --cases ./data/cases \
+  --config ./runtime-config.yaml \
+  --hooks ./hooks \
+  --output ./dist/customer.llmwiki-bundle
+```
+
+Windows 使用：
+
+```bat
+scripts\build-runtime-bundle.bat --knowledge .\data\knowledge --config .\runtime-config.yaml --output .\dist\customer.llmwiki-bundle
+```
+
+如果 bundle 内没有 `runtime-config.yaml`，启动时需要额外传入外部配置：
+
+```bash
+uv run python -m app.runtime_main --bundle ./dist/customer.llmwiki-bundle --config ./runtime-config.yaml
+```
+
+外部配置可以用 `${RUNTIME_BUNDLE_DIR}` 指向解压后的 bundle 内容，例如 `${RUNTIME_BUNDLE_DIR}/data/knowledge`。
+
 Runtime 提供：
 
 ```

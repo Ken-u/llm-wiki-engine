@@ -6,6 +6,9 @@ server:
 
 knowledge:
   name: Local Knowledge
+  # Relative paths are resolved from this config file's directory.
+  # When using an external config with --bundle, use:
+  # path: ${RUNTIME_BUNDLE_DIR}/data/knowledge
   path: ./data/knowledge
   model_name: local-wiki
   system_prompt: |
@@ -18,6 +21,8 @@ knowledge:
 case_library:
   enabled: true
   name: Case Library
+  # When using an external config with --bundle, use:
+  # path: ${RUNTIME_BUNDLE_DIR}/data/cases
   path: ./data/cases
 
 llm:
@@ -85,6 +90,8 @@ hooks:
   # scripts:
   #   - name: sync-repositories
   #     command:
+  #       # Bundled configs can use relative hook paths such as ./hooks/startup.sh.
+  #       # External configs can reference bundled hooks with ${RUNTIME_BUNDLE_DIR}/hooks/startup.sh.
   #       linux: ["bash", "-c", "\"$RUNTIME_APP_DIR/hooks/sync-repositories.sh\""]
   #       darwin: ["bash", "-c", "\"$RUNTIME_APP_DIR/hooks/sync-repositories.sh\""]
   #       windows: ["cmd", "/c", "\"%RUNTIME_APP_DIR%\\hooks\\sync-repositories.bat\""]
