@@ -12,7 +12,7 @@ This version is not encrypted and does not provide DRM. It is a convenience and 
 
 - Add a `--bundle` startup option for `python -m app.runtime_main`.
 - Support `.llmwiki-bundle` and `.zip` files using the standard zip format.
-- Bundle `runtime-config.yaml`, `data/knowledge`, optional `data/cases`, and optional `hooks`.
+- Bundle optional `runtime-config.yaml`, `data/knowledge`, optional `data/cases`, and optional `hooks`.
 - Resolve relative config paths from the extracted bundle directory.
 - Reuse existing runtime search, wiki, case library, chat, OpenAI-compatible API, and hook behavior.
 - Safely reject path traversal and absolute-path entries during extraction.
@@ -45,7 +45,18 @@ hooks/
   startup.bat
 ```
 
-Only `runtime-config.yaml` and `data/knowledge` are required. The case library and hooks are optional.
+Only `data/knowledge` is required. `runtime-config.yaml`, the case library, and hooks are optional.
+
+If the bundle does not contain `runtime-config.yaml`, the user must provide an external config with `--config`. The runtime sets `RUNTIME_BUNDLE_DIR` to the extracted bundle directory before loading config, so the external config can point at bundled data with existing environment expansion:
+
+```yaml
+knowledge:
+  path: ${RUNTIME_BUNDLE_DIR}/data/knowledge
+
+case_library:
+  enabled: true
+  path: ${RUNTIME_BUNDLE_DIR}/data/cases
+```
 
 The recommended extension is `.llmwiki-bundle`, but `.zip` should work because the container is plain zip.
 
@@ -65,9 +76,11 @@ The startup flow is:
 4. If the hash directory already contains a complete extraction marker, reuse it.
 5. Otherwise extract into a temporary sibling directory, validating every zip entry before writing.
 6. Atomically replace or promote the temporary directory to the hash directory.
-7. Load `<extracted>/runtime-config.yaml`.
-8. Set `RUNTIME_CONFIG` to the bundled config path.
-9. Continue with the existing runtime config, hook, and server startup flow.
+7. If `<extracted>/runtime-config.yaml` exists, load it.
+8. If the bundled config is missing and the user provided `--config`, set `RUNTIME_BUNDLE_DIR` to the extracted directory and load that external config.
+9. If the bundled config is missing and the user did not provide `--config`, fail startup with a clear message telling the user to either add `runtime-config.yaml` to the bundle or start with `--config`.
+10. Set `RUNTIME_CONFIG` to the config path that will be loaded.
+11. Continue with the existing runtime config, hook, and server startup flow.
 
 The initial cache location should be deterministic and cross-platform:
 
@@ -97,7 +110,9 @@ hooks:
         windows: ["cmd", "/c", ".\\hooks\\startup.bat"]
 ```
 
-Hook commands run with the config directory as their current working directory, so bundled relative hook paths are supported without new hook behavior.
+Hook commands run with the config directory as their current working directory, so bundled relative hook paths are supported without new hook behavior when the config is bundled.
+
+If a config enables hooks and points at hook scripts that are not present, the existing hook process start failure should be converted into a clear user-facing message that includes the hook name, platform, configured command, and the fact that the script may be missing from the bundle or must be supplied by the external config environment.
 
 ## Extraction Safety
 
@@ -153,7 +168,9 @@ When not started from a bundle, `bundle.enabled` should be `false`.
 
 - Missing bundle path: fail startup with a clear error.
 - Invalid zip: fail startup with a clear error.
-- Missing `runtime-config.yaml`: fail startup with a clear error.
+- Missing `runtime-config.yaml` without `--config`: fail startup with a clear error telling the user to add the config to the bundle or pass `--config`.
+- Missing `runtime-config.yaml` with `--config`: continue with the external config.
+- Config-specified hook script missing from the bundle or external config environment: fail hook startup with a clear message naming the missing command/script. External config can reference bundled hooks with `${RUNTIME_BUNDLE_DIR}/hooks/...`.
 - Unsafe zip entry: fail startup and leave no complete extraction marker.
 - Extraction failure: remove the temporary extraction directory if possible.
 - Existing valid extraction: reuse it without modifying files.
@@ -168,6 +185,9 @@ Unit tests:
 - Rejects absolute POSIX paths.
 - Rejects absolute Windows paths.
 - Rejects missing `runtime-config.yaml`.
+- Allows missing `runtime-config.yaml` when `--config` supplies an external config.
+- Expands `${RUNTIME_BUNDLE_DIR}` in external config paths after bundle extraction.
+- Reports a clear startup failure when hooks are enabled but a configured bundled hook script is missing.
 
 API/runtime tests:
 
@@ -183,6 +203,10 @@ Regression tests:
 ## Acceptance Criteria
 
 - `python -m app.runtime_main --bundle ./customer.llmwiki-bundle` starts from bundled config and data.
+- `python -m app.runtime_main --bundle ./customer.llmwiki-bundle --config ./runtime-config.yaml` can start a data-only bundle with external config.
+- External config can use `${RUNTIME_BUNDLE_DIR}` to reference bundled knowledge, cases, and hooks.
+- A data-only bundle without `--config` fails with a message telling the user how to provide config.
+- A config-specified missing hook script fails with a message that identifies the missing hook command.
 - The same bundle works on Windows, macOS, and Linux with platform-specific hook commands.
 - Relative knowledge, case, and hook paths resolve from the extracted bundle root.
 - Unsafe zip entries are rejected.
