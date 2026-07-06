@@ -18,6 +18,7 @@ This version is not encrypted and does not provide DRM. It is a convenience and 
 - Safely reject path traversal and absolute-path entries during extraction.
 - Reuse an already extracted bundle when the bundle content hash is unchanged.
 - Expose basic bundle metadata through runtime status.
+- Add a cross-platform bundle packaging command and wrapper scripts.
 
 ## Non-Goals
 
@@ -26,6 +27,7 @@ This version is not encrypted and does not provide DRM. It is a convenience and 
 - No new bundle-native search or index format.
 - No bundle authoring UI.
 - No automatic rebuild of missing indexes during bundle load.
+- No automatic ingest or compilation during packaging; inputs must already be compiled runtime directories.
 
 ## Bundle Format
 
@@ -59,6 +61,58 @@ case_library:
 ```
 
 The recommended extension is `.llmwiki-bundle`, but `.zip` should work because the container is plain zip.
+
+## Packaging Command
+
+Add one Python packaging entrypoint and thin platform wrapper scripts:
+
+```bash
+python -m app.runtime.bundle pack \
+  --knowledge ./data/knowledge \
+  --cases ./data/cases \
+  --config ./runtime-config.yaml \
+  --hooks ./hooks \
+  --output ./dist/customer.llmwiki-bundle
+```
+
+Wrapper scripts:
+
+```bash
+scripts/build-runtime-bundle.sh --knowledge ./data/knowledge --config ./runtime-config.yaml --output ./dist/customer.llmwiki-bundle
+scripts/build-runtime-bundle.bat --knowledge .\data\knowledge --config .\runtime-config.yaml --output .\dist\customer.llmwiki-bundle
+```
+
+Packaging rules:
+
+- `--knowledge` is required and must point at a compiled knowledge runtime directory.
+- `--cases` is optional and must point at a compiled case library directory if provided.
+- `--config` is optional. If provided, it is copied into the bundle as `runtime-config.yaml`.
+- `--hooks` is optional. If provided, its contents are copied into the bundle under `hooks/`.
+- Output parent directories are created automatically.
+- Existing output files are overwritten only with `--force`.
+- Archive entries use POSIX-style paths for cross-platform consistency.
+- The packer writes deterministic zip entries where practical by sorting files.
+- The packer should exclude transient files such as `.DS_Store`, `Thumbs.db`, `__pycache__`, `.pytest_cache`, and hidden temporary files.
+
+The packer should validate that:
+
+- The knowledge directory exists.
+- `knowledge/wiki` exists.
+- If `--cases` is provided, the cases directory exists.
+- If `--config` is provided, it is a file.
+- If `--hooks` is provided, it is a directory.
+- The resulting archive contains `data/knowledge`.
+
+The command prints a concise summary:
+
+```text
+Bundle written: dist/customer.llmwiki-bundle
+Knowledge: data/knowledge
+Cases: data/cases
+Config: runtime-config.yaml
+Hooks: hooks
+SHA256: ...
+```
 
 ## Startup Flow
 
@@ -151,6 +205,7 @@ When not started from a bundle, `bundle.enabled` should be `false`.
   - Computes hashes.
   - Chooses cache directories.
   - Performs safe extraction and reuse.
+  - Packs runtime directories into a zip bundle.
   - Stores process-local bundle metadata for status reporting.
 
 - `app/runtime_main.py`
@@ -164,6 +219,12 @@ When not started from a bundle, `bundle.enabled` should be `false`.
 - `runtime-config.example.yaml`
   - Documents the expected bundled relative path pattern.
 
+- `scripts/build-runtime-bundle.sh`
+  - Shell wrapper for `python -m app.runtime.bundle pack`.
+
+- `scripts/build-runtime-bundle.bat`
+  - Windows wrapper for `python -m app.runtime.bundle pack`.
+
 ## Error Handling
 
 - Missing bundle path: fail startup with a clear error.
@@ -174,6 +235,9 @@ When not started from a bundle, `bundle.enabled` should be `false`.
 - Unsafe zip entry: fail startup and leave no complete extraction marker.
 - Extraction failure: remove the temporary extraction directory if possible.
 - Existing valid extraction: reuse it without modifying files.
+- Missing required pack input: fail with a clear command-line error.
+- Existing output bundle without `--force`: fail with a clear command-line error.
+- Packaging a config that references hooks not included in `--hooks`: warn rather than fail, because hooks may be supplied externally.
 
 ## Testing Strategy
 
@@ -188,6 +252,9 @@ Unit tests:
 - Allows missing `runtime-config.yaml` when `--config` supplies an external config.
 - Expands `${RUNTIME_BUNDLE_DIR}` in external config paths after bundle extraction.
 - Reports a clear startup failure when hooks are enabled but a configured bundled hook script is missing.
+- Packages knowledge, optional cases, optional config, and optional hooks into the expected archive layout.
+- Refuses to overwrite an existing output without `--force`.
+- Wrapper scripts invoke the same Python packer on Unix-like systems and Windows.
 
 API/runtime tests:
 
@@ -199,6 +266,7 @@ Regression tests:
 
 - Existing config-only runtime tests continue to pass.
 - Existing hook tests continue to pass.
+- Bundle packaging tests pass on the current platform.
 
 ## Acceptance Criteria
 
@@ -212,3 +280,4 @@ Regression tests:
 - Unsafe zip entries are rejected.
 - Existing `--config` startup behavior remains unchanged.
 - Runtime status shows whether a bundle is active and where it was extracted.
+- `scripts/build-runtime-bundle.sh` and `scripts/build-runtime-bundle.bat` can create a bundle with the expected layout.
