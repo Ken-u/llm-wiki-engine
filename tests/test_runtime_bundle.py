@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import asyncio
 import time
 import zipfile
 from pathlib import Path
@@ -203,3 +204,66 @@ def test_pack_runtime_bundle_overwrites_existing_output_with_force(tmp_path: Pat
     pack_runtime_bundle(knowledge_path=knowledge, output_path=output, force=True)
 
     assert zipfile.is_zipfile(output)
+
+
+def test_resolve_runtime_config_uses_bundled_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("LLMWIKI_RUNTIME_BUNDLE_CACHE", str(tmp_path / "cache"))
+    bundle = tmp_path / "customer.llmwiki-bundle"
+    _write_zip(bundle, _bundle_files())
+
+    from app.runtime_main import _resolve_runtime_config_argument
+
+    config_path = _resolve_runtime_config_argument(config="ignored.yaml", bundle=str(bundle))
+
+    assert config_path.endswith("runtime-config.yaml")
+    assert Path(config_path).is_file()
+    assert os.environ["RUNTIME_CONFIG"] == config_path
+
+
+def test_resolve_runtime_config_uses_external_config_for_data_only_bundle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("LLMWIKI_RUNTIME_BUNDLE_CACHE", str(tmp_path / "cache"))
+    bundle = tmp_path / "customer.llmwiki-bundle"
+    _write_zip(bundle, _bundle_files(include_config=False))
+    external_config = tmp_path / "runtime-config.yaml"
+    external_config.write_text(
+        """
+server:
+  open_browser: false
+knowledge:
+  path: ${RUNTIME_BUNDLE_DIR}/data/knowledge
+case_library:
+  enabled: false
+""",
+        encoding="utf-8",
+    )
+
+    from app.runtime_main import _resolve_runtime_config_argument
+
+    config_path = _resolve_runtime_config_argument(config=str(external_config), bundle=str(bundle))
+
+    assert config_path == str(external_config.resolve())
+    settings = load_runtime_config(config_path, create=False)
+    assert settings.knowledge.path == str(Path(os.environ["RUNTIME_BUNDLE_DIR"], "data", "knowledge").resolve())
+
+
+def test_runtime_status_includes_bundle_metadata(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("LLMWIKI_RUNTIME_BUNDLE_CACHE", str(tmp_path / "cache"))
+    bundle = tmp_path / "customer.llmwiki-bundle"
+    _write_zip(bundle, _bundle_files())
+
+    from app.runtime.bundle import prepare_runtime_bundle
+    from app.runtime import status as runtime_status
+
+    info = prepare_runtime_bundle(bundle)
+    settings = load_runtime_config(info.config_path, create=False)
+    monkeypatch.setattr(runtime_status, "_lancedb_path", lambda _project_dir: str(tmp_path / "missing-lancedb"))
+
+    status = asyncio.run(runtime_status.build_status(settings))
+
+    assert status["bundle"]["enabled"] is True
+    assert status["bundle"]["path"] == info.path
+    assert status["bundle"]["hash"] == info.hash
+    assert status["bundle"]["extract_dir"] == info.extract_dir

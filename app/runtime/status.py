@@ -8,6 +8,7 @@ import lancedb
 
 from app.case_index.builder import load_manifest
 from app.embedding.service import TABLE_NAME, _lancedb_path
+from app.runtime.bundle import get_runtime_bundle_info
 from app.runtime.config import RuntimeSettings
 from app.runtime.hooks import get_hook_results
 
@@ -41,8 +42,15 @@ async def build_status(settings: RuntimeSettings) -> dict:
 
     manifest = load_manifest(str(cases)) if settings.case_library.enabled else None
 
+    bundle_info = get_runtime_bundle_info()
+
     return {
         "runtime": {"version": "0.1.0"},
+        "bundle": (
+            bundle_info.to_dict()
+            if bundle_info is not None
+            else {"enabled": False}
+        ),
         "knowledge": {
             "name": settings.knowledge.name,
             "path": settings.knowledge.path,
