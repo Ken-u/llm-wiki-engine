@@ -91,8 +91,8 @@ _config_path: Path | None = None
 
 
 def _expand_env(value: Any) -> Any:
-    if isinstance(value, str) and value.startswith("${") and value.endswith("}"):
-        return os.environ.get(value[2:-1], "")
+    if isinstance(value, str):
+        return os.path.expandvars(value)
     if isinstance(value, dict):
         return {k: _expand_env(v) for k, v in value.items()}
     if isinstance(value, list):
