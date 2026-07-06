@@ -14,8 +14,23 @@ if errorlevel 1 exit /b %errorlevel%
 uv run pyinstaller --clean --noconfirm packaging\runtime\llm-wiki-runtime.spec
 if errorlevel 1 exit /b %errorlevel%
 
-if not exist dist\hooks mkdir dist\hooks
-xcopy /E /I /Y packaging\runtime\hooks dist\hooks >nul
+set OUTDIR=dist\runtime\windows-x86_64
+set ZIP_PATH=dist\runtime-windows-x86_64.zip
+
+if exist "%OUTDIR%" rmdir /S /Q "%OUTDIR%"
+if exist "%ZIP_PATH%" del "%ZIP_PATH%"
+mkdir "%OUTDIR%"
+
+copy /Y dist\llm-wiki-runtime.exe "%OUTDIR%\llm-wiki-runtime.exe" >nul
+copy /Y runtime-config.example.yaml "%OUTDIR%\runtime-config.example.yaml" >nul
+copy /Y scripts\build-runtime-bundle.sh "%OUTDIR%\build-runtime-bundle.sh" >nul
+copy /Y scripts\build-runtime-bundle.bat "%OUTDIR%\build-runtime-bundle.bat" >nul
+if not exist "%OUTDIR%\hooks" mkdir "%OUTDIR%\hooks"
+xcopy /E /I /Y packaging\runtime\hooks "%OUTDIR%\hooks" >nul
 if errorlevel 1 exit /b %errorlevel%
 
-echo Runtime binary written to dist\llm-wiki-runtime.exe
+python -c "from pathlib import Path; from zipfile import ZipFile, ZIP_DEFLATED; platform_dir='windows-x86_64'; outdir=Path(r'%OUTDIR%'); zip_path=Path(r'%ZIP_PATH%'); zf=ZipFile(zip_path,'w',ZIP_DEFLATED); [zf.write(p, Path(platform_dir) / p.relative_to(outdir)) for p in sorted(outdir.rglob('*')) if p.is_file()]; zf.close()"
+if errorlevel 1 exit /b %errorlevel%
+
+echo Runtime binary written to %OUTDIR%\llm-wiki-runtime.exe
+echo Runtime package written to %ZIP_PATH%

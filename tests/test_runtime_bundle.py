@@ -277,3 +277,19 @@ def test_bundle_wrapper_scripts_forward_to_python_packer():
     assert "python -m app.runtime.bundle pack" in shell_script.read_text(encoding="utf-8")
     assert batch_script.is_file()
     assert "python -m app.runtime.bundle pack" in batch_script.read_text(encoding="utf-8")
+
+
+def test_runtime_build_outputs_include_bundle_tools_and_zip():
+    shell_build = Path("scripts/build-runtime.sh").read_text(encoding="utf-8")
+    batch_build = Path("scripts/build-runtime.bat").read_text(encoding="utf-8")
+    workflow = Path(".github/workflows/runtime-build.yml").read_text(encoding="utf-8")
+
+    assert "build-runtime-bundle.sh" in shell_build
+    assert "build-runtime-bundle.bat" in shell_build
+    assert "runtime-${platform_dir}.zip" in shell_build
+    assert "build-runtime-bundle.sh" in batch_build
+    assert "build-runtime-bundle.bat" in batch_build
+    assert "runtime-windows-x86_64.zip" in batch_build
+    assert "build-runtime-bundle.sh" in workflow
+    assert "build-runtime-bundle.bat" in workflow
+    assert "runtime-${{ matrix.dir }}.zip" in workflow

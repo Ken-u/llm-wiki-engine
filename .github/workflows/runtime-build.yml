@@ -9,6 +9,7 @@ on:
       - "packaging/runtime/**"
       - "runtime-config.example.yaml"
       - "scripts/build-runtime.*"
+      - "scripts/build-runtime-bundle.*"
       - "pyproject.toml"
       - "uv.lock"
 
@@ -60,13 +61,30 @@ jobs:
       - name: Prepare artifact
         shell: bash
         run: |
-          mkdir -p artifact/${{ matrix.dir }}
-          cp "dist/.tmp-runtime-build/${{ matrix.artifact }}" "artifact/${{ matrix.dir }}/${{ matrix.artifact }}"
-          cp runtime-config.example.yaml "artifact/${{ matrix.dir }}/runtime-config.example.yaml"
-          cp -R packaging/runtime/hooks "artifact/${{ matrix.dir }}/hooks"
+          set -euo pipefail
+          rm -rf artifact dist/runtime-package
+          mkdir -p "dist/runtime-package/${{ matrix.dir }}"
+          cp "dist/.tmp-runtime-build/${{ matrix.artifact }}" "dist/runtime-package/${{ matrix.dir }}/${{ matrix.artifact }}"
+          cp runtime-config.example.yaml "dist/runtime-package/${{ matrix.dir }}/runtime-config.example.yaml"
+          cp -R packaging/runtime/hooks "dist/runtime-package/${{ matrix.dir }}/hooks"
+          cp scripts/build-runtime-bundle.sh "dist/runtime-package/${{ matrix.dir }}/build-runtime-bundle.sh"
+          cp scripts/build-runtime-bundle.bat "dist/runtime-package/${{ matrix.dir }}/build-runtime-bundle.bat"
+          python - <<'PY'
+          from pathlib import Path
+          from zipfile import ZIP_DEFLATED, ZipFile
+          
+          platform_dir = "${{ matrix.dir }}"
+          root = Path("dist/runtime-package")
+          zip_path = Path(f"artifact/runtime-{platform_dir}.zip")
+          zip_path.parent.mkdir(parents=True, exist_ok=True)
+          with ZipFile(zip_path, "w", ZIP_DEFLATED) as zf:
+              for path in sorted((root / platform_dir).rglob("*")):
+                  if path.is_file():
+                      zf.write(path, Path(platform_dir) / path.relative_to(root / platform_dir))
+          PY
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: runtime-${{ matrix.dir }}
-          path: artifact/
+          path: artifact/runtime-${{ matrix.dir }}.zip

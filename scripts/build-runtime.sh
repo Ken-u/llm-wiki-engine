@@ -53,16 +53,34 @@ build_linux() {
     npm --prefix ../llm-wiki-ui run build:runtime
   fi
   uv sync --extra dev
-  local outdir="dist/runtime/linux-x86_64"
+  local platform_dir="linux-x86_64"
+  local outdir="dist/runtime/${platform_dir}"
   local tmpdist="dist/.tmp-runtime-build"
+  local zip_path="dist/runtime-${platform_dir}.zip"
   rm -rf "$tmpdist" "$outdir"
+  rm -f "$zip_path"
   uv run pyinstaller --clean --noconfirm --distpath "$tmpdist" packaging/runtime/llm-wiki-runtime.spec
   mkdir -p "$outdir"
   cp "$tmpdist/llm-wiki-runtime" "$outdir/llm-wiki-runtime"
   cp runtime-config.example.yaml "$outdir/runtime-config.example.yaml"
   cp -R packaging/runtime/hooks "$outdir/hooks"
+  cp scripts/build-runtime-bundle.sh "$outdir/build-runtime-bundle.sh"
+  cp scripts/build-runtime-bundle.bat "$outdir/build-runtime-bundle.bat"
+  python3 - <<PY
+from pathlib import Path
+from zipfile import ZIP_DEFLATED, ZipFile
+
+platform_dir = "${platform_dir}"
+outdir = Path("${outdir}")
+zip_path = Path("${zip_path}")
+with ZipFile(zip_path, "w", ZIP_DEFLATED) as zf:
+    for path in sorted(outdir.rglob("*")):
+        if path.is_file():
+            zf.write(path, Path(platform_dir) / path.relative_to(outdir))
+PY
   rm -rf "$tmpdist"
   echo "Linux runtime binary written to $outdir/llm-wiki-runtime"
+  echo "Linux runtime package written to $zip_path"
 }
 
 unsupported_cross_build() {
