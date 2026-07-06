@@ -267,3 +267,13 @@ def test_runtime_status_includes_bundle_metadata(tmp_path: Path, monkeypatch: py
     assert status["bundle"]["path"] == info.path
     assert status["bundle"]["hash"] == info.hash
     assert status["bundle"]["extract_dir"] == info.extract_dir
+
+
+def test_bundle_wrapper_scripts_forward_to_python_packer():
+    shell_script = Path("scripts/build-runtime-bundle.sh")
+    batch_script = Path("scripts/build-runtime-bundle.bat")
+
+    assert shell_script.is_file()
+    assert "python -m app.runtime.bundle pack" in shell_script.read_text(encoding="utf-8")
+    assert batch_script.is_file()
+    assert "python -m app.runtime.bundle pack" in batch_script.read_text(encoding="utf-8")

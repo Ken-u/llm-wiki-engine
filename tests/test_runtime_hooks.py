@@ -108,9 +108,9 @@ hooks:
     - name: env
       command:
         linux:
-          - {sys.executable}
+          - sh
           - -c
-          - "import os, pathlib; pathlib.Path(r'{output}').write_text(os.environ['RUNTIME_CONFIG'], encoding='utf-8')"
+          - 'printf %s "$RUNTIME_CONFIG" > {output}'
 """,
         encoding="utf-8",
     )
@@ -133,9 +133,9 @@ hooks:
     - name: env
       command:
         linux:
-          - {sys.executable}
+          - sh
           - -c
-          - "import os, pathlib; pathlib.Path(r'{output}').write_text(os.environ['RUNTIME_APP_DIR'], encoding='utf-8')"
+          - 'printf %s "$RUNTIME_APP_DIR" > {output}'
 """,
         encoding="utf-8",
     )
@@ -145,3 +145,28 @@ hooks:
 
     assert results[0].status == "ok"
     assert output.read_text(encoding="utf-8") == str(Path.cwd().resolve())
+
+
+def test_runtime_hook_missing_script_reports_hook_and_command(tmp_path):
+    config = tmp_path / "runtime-config.yaml"
+    missing = tmp_path / "hooks" / "missing.py"
+    config.write_text(
+        f"""
+hooks:
+  enabled: true
+  stop_on_failure: false
+  scripts:
+    - name: missing-bundled-hook
+      command:
+        linux:
+          - {missing}
+""",
+        encoding="utf-8",
+    )
+
+    settings = load_runtime_config(config, create=False)
+    results = asyncio.run(run_startup_hooks(settings))
+
+    assert results[0].status == "failed"
+    assert "missing-bundled-hook" in results[0].error
+    assert str(missing) in results[0].error

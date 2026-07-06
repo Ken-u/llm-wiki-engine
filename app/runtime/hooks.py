@@ -77,7 +77,8 @@ async def _run_command(
 ) -> HookRunResult:
     """Execute a single hook command and log inputs/outputs for debugging."""
     start = time.monotonic()
-    logger.info("Starting hook '%s' with command: %s", name, " ".join(shlex.quote(str(c)) for c in command))
+    command_text = " ".join(shlex.quote(str(c)) for c in command)
+    logger.info("Starting hook '%s' with command: %s", name, command_text)
     logger.debug("Hook '%s' cwd=%s env_keys=%s", name, cwd, sorted(env.keys()))
 
     try:
@@ -93,7 +94,7 @@ async def _run_command(
         return HookRunResult(
             name=name,
             status="failed",
-            error=f"Failed to start process: {exc}",
+            error=f"Hook '{name}' failed to start command [{command_text}]: {exc}",
         )
 
     try:
@@ -142,7 +143,10 @@ async def _run_command(
         stderr=stderr_text,
     )
     if proc.returncode != 0:
-        result.error = f"Hook exited with code {proc.returncode}"
+        detail = stderr_text.strip() or stdout_text.strip()
+        result.error = f"Hook '{name}' command [{command_text}] exited with code {proc.returncode}"
+        if detail:
+            result.error = f"{result.error}: {detail}"
         logger.error("Hook '%s' failed with exit code %d after %.3fs", name, proc.returncode or -1, elapsed)
     else:
         logger.info("Hook '%s' completed successfully after %.3fs", name, elapsed)

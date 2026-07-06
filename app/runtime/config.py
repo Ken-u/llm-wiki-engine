@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Any, Literal
 
@@ -17,6 +18,9 @@ from app.config import (
     SearchConfig,
     ServerConfig,
 )
+
+
+ENV_PATTERN = re.compile(r"\$\{([^}]+)\}")
 
 
 class RuntimeServerConfig(BaseModel):
@@ -92,7 +96,7 @@ _config_path: Path | None = None
 
 def _expand_env(value: Any) -> Any:
     if isinstance(value, str):
-        return os.path.expandvars(value)
+        return ENV_PATTERN.sub(lambda match: os.environ.get(match.group(1), ""), value)
     if isinstance(value, dict):
         return {k: _expand_env(v) for k, v in value.items()}
     if isinstance(value, list):
