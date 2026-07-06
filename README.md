@@ -85,6 +85,17 @@ uv run python -m app.runtime_main --bundle ./dist/customer.llmwiki-bundle
   --output ./dist/customer.llmwiki-bundle
 ```
 
+默认情况下，如果传入 `--config`，打包器会把 bundle 内的 `runtime-config.yaml` 自动改写为：
+
+```yaml
+knowledge:
+  path: ./data/knowledge
+case_library:
+  path: ./data/cases
+```
+
+其中 `case_library.path` 只在传入 `--cases` 时改写。需要原样保留配置文件时，加 `--keep-config`。
+
 Windows 使用：
 
 ```bat

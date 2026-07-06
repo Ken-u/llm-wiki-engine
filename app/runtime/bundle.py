@@ -11,6 +11,8 @@ from argparse import ArgumentParser
 from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
+import yaml
+
 
 MARKER_FILE = ".llmwiki-bundle-extracted"
 DEFAULT_CONFIG_NAME = "runtime-config.yaml"
@@ -211,6 +213,33 @@ def _write_tree(zf: zipfile.ZipFile, source: Path, archive_root: str) -> None:
         zf.write(file_path, f"{archive_root.rstrip('/')}/{rel}")
 
 
+def _bundle_config_bytes(config_path: Path, *, has_cases: bool, keep_config: bool) -> bytes:
+    original = config_path.read_text(encoding="utf-8")
+    if keep_config:
+        return original.encode("utf-8")
+
+    try:
+        data = yaml.safe_load(original) or {}
+    except yaml.YAMLError as exc:
+        raise BundleError(f"Runtime config YAML is invalid: {config_path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise BundleError(f"Runtime config YAML must be a mapping: {config_path}")
+
+    knowledge = data.setdefault("knowledge", {})
+    if not isinstance(knowledge, dict):
+        raise BundleError("Runtime config knowledge section must be a mapping")
+    knowledge["path"] = "./data/knowledge"
+
+    if has_cases:
+        case_library = data.setdefault("case_library", {})
+        if not isinstance(case_library, dict):
+            raise BundleError("Runtime config case_library section must be a mapping")
+        case_library["enabled"] = True
+        case_library["path"] = "./data/cases"
+
+    return yaml.safe_dump(data, allow_unicode=True, sort_keys=False).encode("utf-8")
+
+
 def _validate_pack_inputs(
     knowledge_path: Path,
     output_path: Path,
@@ -241,6 +270,7 @@ def pack_runtime_bundle(
     config_path: str | Path | None = None,
     hooks_path: str | Path | None = None,
     force: bool = False,
+    keep_config: bool = False,
 ) -> BundlePackSummary:
     knowledge = Path(knowledge_path).expanduser().resolve()
     output = Path(output_path).expanduser().resolve()
@@ -258,7 +288,10 @@ def pack_runtime_bundle(
     try:
         with zipfile.ZipFile(tmp_output, "w", compression=zipfile.ZIP_DEFLATED) as zf:
             if config is not None:
-                zf.write(config, DEFAULT_CONFIG_NAME)
+                zf.writestr(
+                    DEFAULT_CONFIG_NAME,
+                    _bundle_config_bytes(config, has_cases=cases is not None, keep_config=keep_config),
+                )
             _write_tree(zf, knowledge, "data/knowledge")
             if cases is not None:
                 _write_tree(zf, cases, "data/cases")
@@ -289,6 +322,11 @@ def _build_arg_parser() -> ArgumentParser:
     pack.add_argument("--hooks")
     pack.add_argument("--output", required=True)
     pack.add_argument("--force", action="store_true")
+    pack.add_argument(
+        "--keep-config",
+        action="store_true",
+        help="Copy runtime-config.yaml unchanged instead of rewriting bundled data paths.",
+    )
     return parser
 
 
@@ -303,6 +341,7 @@ def main(argv: list[str] | None = None) -> None:
             config_path=args.config,
             hooks_path=args.hooks,
             force=args.force,
+            keep_config=args.keep_config,
         )
         print(f"Bundle written: {summary.output_path}")
         print(f"Knowledge: {summary.knowledge}")

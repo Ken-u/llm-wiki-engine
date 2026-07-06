@@ -154,7 +154,17 @@ def test_pack_runtime_bundle_writes_expected_layout(tmp_path: Path):
     (cases / ".llm-wiki" / "case-index").mkdir(parents=True)
     (cases / ".llm-wiki" / "case-index" / "manifest.json").write_text("{}", encoding="utf-8")
     config = tmp_path / "runtime-config.yaml"
-    config.write_text("knowledge:\n  path: ./data/knowledge\n", encoding="utf-8")
+    config.write_text(
+        f"""
+knowledge:
+  name: Source Knowledge
+  path: {knowledge}
+case_library:
+  enabled: true
+  path: {cases}
+""",
+        encoding="utf-8",
+    )
     hooks = tmp_path / "hooks"
     hooks.mkdir()
     (hooks / "startup.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
@@ -172,11 +182,48 @@ def test_pack_runtime_bundle_writes_expected_layout(tmp_path: Path):
     assert len(summary.hash) == 64
     with zipfile.ZipFile(output) as zf:
         names = set(zf.namelist())
+        bundled_config = zf.read("runtime-config.yaml").decode("utf-8")
     assert "runtime-config.yaml" in names
     assert "data/knowledge/wiki/index.md" in names
     assert "data/cases/.llm-wiki/case-index/manifest.json" in names
     assert "hooks/startup.sh" in names
     assert "data/knowledge/__pycache__/ignored.pyc" not in names
+    assert "path: ./data/knowledge" in bundled_config
+    assert "path: ./data/cases" in bundled_config
+    assert str(knowledge) not in bundled_config
+    assert str(cases) not in bundled_config
+
+
+def test_pack_runtime_bundle_keep_config_preserves_config_paths(tmp_path: Path):
+    from app.runtime.bundle import pack_runtime_bundle
+
+    knowledge = tmp_path / "knowledge"
+    (knowledge / "wiki").mkdir(parents=True)
+    (knowledge / "wiki" / "index.md").write_text("# Knowledge\n", encoding="utf-8")
+    config = tmp_path / "runtime-config.yaml"
+    config.write_text(
+        f"""
+knowledge:
+  path: {knowledge}
+case_library:
+  enabled: false
+  path: ./old-cases
+""",
+        encoding="utf-8",
+    )
+    output = tmp_path / "customer.llmwiki-bundle"
+
+    pack_runtime_bundle(
+        knowledge_path=knowledge,
+        output_path=output,
+        config_path=config,
+        keep_config=True,
+    )
+
+    with zipfile.ZipFile(output) as zf:
+        bundled_config = zf.read("runtime-config.yaml").decode("utf-8")
+    assert str(knowledge) in bundled_config
+    assert "path: ./old-cases" in bundled_config
 
 
 def test_pack_runtime_bundle_refuses_existing_output_without_force(tmp_path: Path):
@@ -293,3 +340,12 @@ def test_runtime_build_outputs_include_bundle_tools_and_zip():
     assert "build-runtime-bundle.sh" in workflow
     assert "build-runtime-bundle.bat" in workflow
     assert "runtime-${{ matrix.dir }}.zip" in workflow
+
+
+def test_bundle_pack_cli_exposes_keep_config_flag(capsys):
+    from app.runtime.bundle import _build_arg_parser
+
+    with pytest.raises(SystemExit):
+        _build_arg_parser().parse_args(["pack", "--help"])
+
+    assert "--keep-config" in capsys.readouterr().out

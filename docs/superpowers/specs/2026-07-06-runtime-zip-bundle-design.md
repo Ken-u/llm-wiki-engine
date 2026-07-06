@@ -87,6 +87,8 @@ Packaging rules:
 - `--knowledge` is required and must point at a compiled knowledge runtime directory.
 - `--cases` is optional and must point at a compiled case library directory if provided.
 - `--config` is optional. If provided, it is copied into the bundle as `runtime-config.yaml`.
+- By default, bundled config paths are rewritten to match bundled data: `knowledge.path: ./data/knowledge`, and when `--cases` is provided, `case_library.enabled: true` plus `case_library.path: ./data/cases`.
+- `--keep-config` copies the config unchanged and disables path rewriting.
 - `--hooks` is optional. If provided, its contents are copied into the bundle under `hooks/`.
 - Output parent directories are created automatically.
 - Existing output files are overwritten only with `--force`.
