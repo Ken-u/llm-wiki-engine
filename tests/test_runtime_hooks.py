@@ -97,54 +97,64 @@ hooks:
     assert results[0]["path"] == str((config.parent / "data" / "knowledge").resolve())
 
 
-def test_runtime_hook_scripts_receive_runtime_config_env(tmp_path):
+def test_runtime_hook_scripts_receive_runtime_config_env(tmp_path, monkeypatch):
     config = tmp_path / "runtime-config.yaml"
-    output = tmp_path / "env.txt"
+    captured = {}
     config.write_text(
-        f"""
+        """
 hooks:
   enabled: true
   scripts:
     - name: env
       command:
         linux:
-          - sh
-          - -c
-          - 'printf %s "$RUNTIME_CONFIG" > {output}'
+          - env
 """,
         encoding="utf-8",
     )
 
+    async def fake_run_command(name, command, cwd, env, timeout_seconds):
+        from app.runtime.hooks import HookRunResult
+
+        captured.update(env)
+        return HookRunResult(name=name, status="ok", exit_code=0)
+
+    monkeypatch.setattr("app.runtime.hooks._run_command", fake_run_command)
     settings = load_runtime_config(config, create=False)
     results = asyncio.run(run_startup_hooks(settings))
 
     assert results[0].status == "ok"
-    assert output.read_text(encoding="utf-8") == str(config.resolve())
+    assert captured["RUNTIME_CONFIG"] == str(config.resolve())
 
 
-def test_runtime_hook_scripts_receive_runtime_app_dir_env(tmp_path):
+def test_runtime_hook_scripts_receive_runtime_app_dir_env(tmp_path, monkeypatch):
     config = tmp_path / "runtime-config.yaml"
-    output = tmp_path / "app_dir.txt"
+    captured = {}
     config.write_text(
-        f"""
+        """
 hooks:
   enabled: true
   scripts:
     - name: env
       command:
         linux:
-          - sh
-          - -c
-          - 'printf %s "$RUNTIME_APP_DIR" > {output}'
+          - env
 """,
         encoding="utf-8",
     )
 
+    async def fake_run_command(name, command, cwd, env, timeout_seconds):
+        from app.runtime.hooks import HookRunResult
+
+        captured.update(env)
+        return HookRunResult(name=name, status="ok", exit_code=0)
+
+    monkeypatch.setattr("app.runtime.hooks._run_command", fake_run_command)
     settings = load_runtime_config(config, create=False)
     results = asyncio.run(run_startup_hooks(settings))
 
     assert results[0].status == "ok"
-    assert output.read_text(encoding="utf-8") == str(Path.cwd().resolve())
+    assert captured["RUNTIME_APP_DIR"] == str(Path.cwd().resolve())
 
 
 def test_runtime_hook_missing_script_reports_hook_and_command(tmp_path):
