@@ -7,6 +7,7 @@ import os
 import shutil
 import tempfile
 import zipfile
+from argparse import ArgumentParser
 from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
@@ -29,6 +30,16 @@ class BundleInfo:
 
     def to_dict(self) -> dict[str, str | bool]:
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class BundlePackSummary:
+    output_path: str
+    hash: str
+    knowledge: str
+    cases: str
+    config: str
+    hooks: str
 
 
 _bundle_info: BundleInfo | None = None
@@ -166,3 +177,140 @@ def prepare_runtime_bundle(
         config_path=str(config_path),
     )
     return _bundle_info
+
+
+EXCLUDED_NAMES = {
+    ".DS_Store",
+    "Thumbs.db",
+}
+
+EXCLUDED_DIRS = {
+    "__pycache__",
+    ".pytest_cache",
+}
+
+
+def _should_exclude(path: Path) -> bool:
+    if path.name in EXCLUDED_NAMES:
+        return True
+    if path.name.startswith(".") and path.name.endswith(".tmp"):
+        return True
+    return any(part in EXCLUDED_DIRS for part in path.parts)
+
+
+def _iter_files(root: Path) -> list[Path]:
+    return sorted(
+        (path for path in root.rglob("*") if path.is_file() and not _should_exclude(path.relative_to(root))),
+        key=lambda p: p.relative_to(root).as_posix(),
+    )
+
+
+def _write_tree(zf: zipfile.ZipFile, source: Path, archive_root: str) -> None:
+    for file_path in _iter_files(source):
+        rel = file_path.relative_to(source).as_posix()
+        zf.write(file_path, f"{archive_root.rstrip('/')}/{rel}")
+
+
+def _validate_pack_inputs(
+    knowledge_path: Path,
+    output_path: Path,
+    cases_path: Path | None,
+    config_path: Path | None,
+    hooks_path: Path | None,
+    force: bool,
+) -> None:
+    if not knowledge_path.is_dir():
+        raise BundleError(f"Knowledge directory not found: {knowledge_path}")
+    if not (knowledge_path / "wiki").is_dir():
+        raise BundleError(f"Knowledge directory must contain wiki/: {knowledge_path}")
+    if cases_path is not None and not cases_path.is_dir():
+        raise BundleError(f"Case library directory not found: {cases_path}")
+    if config_path is not None and not config_path.is_file():
+        raise BundleError(f"Runtime config file not found: {config_path}")
+    if hooks_path is not None and not hooks_path.is_dir():
+        raise BundleError(f"Hooks directory not found: {hooks_path}")
+    if output_path.exists() and not force:
+        raise BundleError(f"Output bundle already exists: {output_path}. Use --force to overwrite.")
+
+
+def pack_runtime_bundle(
+    *,
+    knowledge_path: str | Path,
+    output_path: str | Path,
+    cases_path: str | Path | None = None,
+    config_path: str | Path | None = None,
+    hooks_path: str | Path | None = None,
+    force: bool = False,
+) -> BundlePackSummary:
+    knowledge = Path(knowledge_path).expanduser().resolve()
+    output = Path(output_path).expanduser().resolve()
+    cases = Path(cases_path).expanduser().resolve() if cases_path is not None else None
+    config = Path(config_path).expanduser().resolve() if config_path is not None else None
+    hooks = Path(hooks_path).expanduser().resolve() if hooks_path is not None else None
+
+    _validate_pack_inputs(knowledge, output, cases, config, hooks, force)
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    tmp_output = output.with_name(f".{output.name}.tmp")
+    if tmp_output.exists():
+        tmp_output.unlink()
+
+    try:
+        with zipfile.ZipFile(tmp_output, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            if config is not None:
+                zf.write(config, DEFAULT_CONFIG_NAME)
+            _write_tree(zf, knowledge, "data/knowledge")
+            if cases is not None:
+                _write_tree(zf, cases, "data/cases")
+            if hooks is not None:
+                _write_tree(zf, hooks, "hooks")
+        tmp_output.replace(output)
+    except Exception:
+        tmp_output.unlink(missing_ok=True)
+        raise
+
+    return BundlePackSummary(
+        output_path=str(output),
+        hash=_sha256_file(output),
+        knowledge="data/knowledge",
+        cases="data/cases" if cases is not None else "",
+        config=DEFAULT_CONFIG_NAME if config is not None else "",
+        hooks="hooks" if hooks is not None else "",
+    )
+
+
+def _build_arg_parser() -> ArgumentParser:
+    parser = ArgumentParser(description="Runtime bundle tools")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    pack = subparsers.add_parser("pack", help="Package a runtime zip bundle")
+    pack.add_argument("--knowledge", required=True)
+    pack.add_argument("--cases")
+    pack.add_argument("--config")
+    pack.add_argument("--hooks")
+    pack.add_argument("--output", required=True)
+    pack.add_argument("--force", action="store_true")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = _build_arg_parser()
+    args = parser.parse_args(argv)
+    if args.command == "pack":
+        summary = pack_runtime_bundle(
+            knowledge_path=args.knowledge,
+            output_path=args.output,
+            cases_path=args.cases,
+            config_path=args.config,
+            hooks_path=args.hooks,
+            force=args.force,
+        )
+        print(f"Bundle written: {summary.output_path}")
+        print(f"Knowledge: {summary.knowledge}")
+        print(f"Cases: {summary.cases or '-'}")
+        print(f"Config: {summary.config or '-'}")
+        print(f"Hooks: {summary.hooks or '-'}")
+        print(f"SHA256: {summary.hash}")
+
+
+if __name__ == "__main__":
+    main()

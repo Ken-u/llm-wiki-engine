@@ -138,3 +138,68 @@ def test_prepare_runtime_bundle_rejects_unsafe_zip_entries(tmp_path: Path, entry
 
     with pytest.raises(BundleError, match="Unsafe bundle entry"):
         prepare_runtime_bundle(bundle)
+
+
+def test_pack_runtime_bundle_writes_expected_layout(tmp_path: Path):
+    from app.runtime.bundle import pack_runtime_bundle
+
+    knowledge = tmp_path / "knowledge"
+    (knowledge / "wiki").mkdir(parents=True)
+    (knowledge / "wiki" / "index.md").write_text("# Knowledge\n", encoding="utf-8")
+    (knowledge / "raw" / "sources").mkdir(parents=True)
+    (knowledge / "__pycache__").mkdir()
+    (knowledge / "__pycache__" / "ignored.pyc").write_bytes(b"ignored")
+    cases = tmp_path / "cases"
+    (cases / ".llm-wiki" / "case-index").mkdir(parents=True)
+    (cases / ".llm-wiki" / "case-index" / "manifest.json").write_text("{}", encoding="utf-8")
+    config = tmp_path / "runtime-config.yaml"
+    config.write_text("knowledge:\n  path: ./data/knowledge\n", encoding="utf-8")
+    hooks = tmp_path / "hooks"
+    hooks.mkdir()
+    (hooks / "startup.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    output = tmp_path / "dist" / "customer.llmwiki-bundle"
+
+    summary = pack_runtime_bundle(
+        knowledge_path=knowledge,
+        output_path=output,
+        cases_path=cases,
+        config_path=config,
+        hooks_path=hooks,
+    )
+
+    assert summary.output_path == str(output.resolve())
+    assert len(summary.hash) == 64
+    with zipfile.ZipFile(output) as zf:
+        names = set(zf.namelist())
+    assert "runtime-config.yaml" in names
+    assert "data/knowledge/wiki/index.md" in names
+    assert "data/cases/.llm-wiki/case-index/manifest.json" in names
+    assert "hooks/startup.sh" in names
+    assert "data/knowledge/__pycache__/ignored.pyc" not in names
+
+
+def test_pack_runtime_bundle_refuses_existing_output_without_force(tmp_path: Path):
+    from app.runtime.bundle import BundleError, pack_runtime_bundle
+
+    knowledge = tmp_path / "knowledge"
+    (knowledge / "wiki").mkdir(parents=True)
+    (knowledge / "wiki" / "index.md").write_text("# Knowledge\n", encoding="utf-8")
+    output = tmp_path / "customer.llmwiki-bundle"
+    output.write_text("existing", encoding="utf-8")
+
+    with pytest.raises(BundleError, match="already exists"):
+        pack_runtime_bundle(knowledge_path=knowledge, output_path=output)
+
+
+def test_pack_runtime_bundle_overwrites_existing_output_with_force(tmp_path: Path):
+    from app.runtime.bundle import pack_runtime_bundle
+
+    knowledge = tmp_path / "knowledge"
+    (knowledge / "wiki").mkdir(parents=True)
+    (knowledge / "wiki" / "index.md").write_text("# Knowledge\n", encoding="utf-8")
+    output = tmp_path / "customer.llmwiki-bundle"
+    output.write_text("existing", encoding="utf-8")
+
+    pack_runtime_bundle(knowledge_path=knowledge, output_path=output, force=True)
+
+    assert zipfile.is_zipfile(output)
