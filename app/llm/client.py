@@ -6,6 +6,7 @@ import asyncio
 import contextvars
 import json
 import logging
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -261,6 +262,29 @@ async def _wait_with_cancel(task: asyncio.Task[T], should_cancel: ShouldCancel) 
     return await task
 
 
+async def _stream_chunk_with_cancel(resp, should_cancel: ShouldCancel):
+    next_task = asyncio.create_task(resp.__anext__())
+    try:
+        while True:
+            done, _ = await asyncio.wait({next_task}, timeout=0.2)
+            if next_task in done:
+                return await next_task
+            if should_cancel is not None and await should_cancel():
+                next_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await next_task
+                close = getattr(resp, "aclose", None)
+                if callable(close):
+                    await close()
+                raise asyncio.CancelledError("Client disconnected")
+    except BaseException:
+        if not next_task.done():
+            next_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await next_task
+        raise
+
+
 async def complete(
     system: str,
     user: str,
@@ -311,17 +335,18 @@ async def stream(
             ),
         ))
         resp = await _wait_with_cancel(stream_task, should_cancel)
-        async for chunk in resp:
-            if should_cancel is not None and await should_cancel():
-                close = getattr(resp, "aclose", None)
-                if callable(close):
-                    await close()
-                raise asyncio.CancelledError("Client disconnected")
+        while True:
+            try:
+                chunk = await _stream_chunk_with_cancel(resp, should_cancel)
+            except StopAsyncIteration:
+                break
             delta = chunk.choices[0].delta
             if delta and delta.content:
                 parts.append(delta.content)
                 yield delta.content
         _log_llm_success("stream", request, {"content": "".join(parts)})
+    except asyncio.CancelledError:
+        raise
     except Exception as exc:
         _log_llm_error("stream", request, exc)
         raise
@@ -442,6 +467,8 @@ async def complete_with_tools(
             "raw": _jsonable(resp),
         })
         return result
+    except asyncio.CancelledError:
+        raise
     except Exception as exc:
         _log_llm_error("tool_completion", request, exc)
         raise

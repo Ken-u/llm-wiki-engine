@@ -271,3 +271,46 @@ def test_complete_with_tools_can_be_cancelled_by_disconnect_signal():
                 raise AssertionError("Expected cancellation when client disconnects")
 
     asyncio.run(run())
+
+
+def test_stream_can_be_cancelled_while_waiting_next_chunk():
+    class SlowStream:
+        async def __anext__(self):
+            await asyncio.sleep(10)
+            raise StopAsyncIteration
+
+        async def aclose(self):
+            return None
+
+    async def stream_completion(**_kwargs):
+        return SlowStream()
+
+    async def should_cancel() -> bool:
+        return True
+
+    async def run():
+        cfg = SimpleNamespace(
+            llm=SimpleNamespace(
+                provider="openai",
+                model="test-model",
+                api_key="secret-key",
+                api_base=None,
+                debug_llm_log="",
+                chat_temperature=0.7,
+                timeout=300,
+            )
+        )
+        litellm = SimpleNamespace(acompletion=stream_completion)
+        with patch.object(client, "get_config", return_value=cfg):
+            with patch.object(client, "_litellm", return_value=litellm):
+                stream_gen = client.stream(
+                    [{"role": "user", "content": "cancel stream"}],
+                    should_cancel=should_cancel,
+                )
+                try:
+                    await stream_gen.__anext__()
+                except asyncio.CancelledError:
+                    return
+                raise AssertionError("Expected streaming cancellation when client disconnects")
+
+    asyncio.run(run())
