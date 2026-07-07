@@ -27,7 +27,7 @@ router = APIRouter(prefix="/api/projects/{project_id}", tags=["chat"])
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1)
     conversation_id: str | None = None
-    use_fast_model: bool | None = None
+    use_fast_model: bool = False
 
 
 class ConversationResponse(BaseModel):
@@ -96,12 +96,6 @@ async def chat(
         if m["role"] in ("user", "assistant")
     ]
 
-    use_fast_model = (
-        body.use_fast_model
-        if body.use_fast_model is not None
-        else bool(get_config().llm.fast_model)
-    )
-
     async def should_cancel() -> bool:
         return await request.is_disconnected()
 
@@ -164,7 +158,7 @@ async def chat(
                 llm_history,
                 "",
                 should_cancel=should_cancel,
-                use_fast_model=use_fast_model,
+                use_fast_model=body.use_fast_model,
             ):
                 payload = json.loads(event)
                 if "token" in payload:

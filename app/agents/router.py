@@ -80,7 +80,7 @@ class CreateAgentResponse(BaseModel):
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1)
     conversation_id: str | None = None
-    use_fast_model: bool | None = None
+    use_fast_model: bool = False
 
 
 class ConversationResponse(BaseModel):
@@ -326,12 +326,6 @@ async def agent_chat(
                 if m.get("role") in ("user", "assistant")
             ]
 
-    use_fast_model = (
-        body.use_fast_model
-        if body.use_fast_model is not None
-        else bool(get_config().llm.fast_model)
-    )
-
     async def should_cancel() -> bool:
         return await request.is_disconnected()
 
@@ -345,7 +339,7 @@ async def agent_chat(
                 max_tool_calls=agent.max_tool_calls,
                 debug_result_limit=agent.debug_result_limit,
                 should_cancel=should_cancel,
-                use_fast_model=use_fast_model,
+                use_fast_model=body.use_fast_model,
             ):
                 payload = json.loads(event)
                 if "token" in payload:
