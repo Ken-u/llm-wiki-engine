@@ -314,3 +314,89 @@ def test_stream_can_be_cancelled_while_waiting_next_chunk():
                 raise AssertionError("Expected streaming cancellation when client disconnects")
 
     asyncio.run(run())
+
+
+def test_complete_with_tools_stream_reconstructs_tool_calls():
+    class ToolCallStream:
+        def __init__(self):
+            self._chunks = [
+                SimpleNamespace(
+                    choices=[
+                        SimpleNamespace(
+                            finish_reason=None,
+                            delta=SimpleNamespace(
+                                content=None,
+                                tool_calls=[
+                                    SimpleNamespace(
+                                        index=0,
+                                        id="call-1",
+                                        function=SimpleNamespace(name="search_wiki", arguments='{"query":"ED'),
+                                    ),
+                                ],
+                            ),
+                        )
+                    ],
+                    usage=None,
+                ),
+                SimpleNamespace(
+                    choices=[
+                        SimpleNamespace(
+                            finish_reason="tool_calls",
+                            delta=SimpleNamespace(
+                                content=None,
+                                tool_calls=[
+                                    SimpleNamespace(
+                                        index=0,
+                                        id=None,
+                                        function=SimpleNamespace(name=None, arguments='LA"}'),
+                                    ),
+                                ],
+                            ),
+                        )
+                    ],
+                    usage=SimpleNamespace(prompt_tokens=10, completion_tokens=2, total_tokens=12),
+                ),
+            ]
+            self._idx = 0
+
+        async def __anext__(self):
+            if self._idx >= len(self._chunks):
+                raise StopAsyncIteration
+            chunk = self._chunks[self._idx]
+            self._idx += 1
+            return chunk
+
+        async def aclose(self):
+            return None
+
+    async def stream_completion(**_kwargs):
+        return ToolCallStream()
+
+    async def run():
+        cfg = SimpleNamespace(
+            llm=SimpleNamespace(
+                provider="openai",
+                model="test-model",
+                api_key="secret-key",
+                api_base=None,
+                debug_llm_log="",
+                chat_temperature=0.7,
+                timeout=300,
+                stream=True,
+            )
+        )
+        litellm = SimpleNamespace(acompletion=stream_completion)
+        with patch.object(client, "get_config", return_value=cfg):
+            with patch.object(client, "_litellm", return_value=litellm):
+                result = await client.complete_with_tools(
+                    [{"role": "user", "content": "查 EDLA"}],
+                    [{"type": "function", "function": {"name": "search_wiki"}}],
+                )
+        assert len(result.tool_calls) == 1
+        assert result.tool_calls[0].id == "call-1"
+        assert result.tool_calls[0].name == "search_wiki"
+        assert result.tool_calls[0].arguments == '{"query":"EDLA"}'
+        assert result.finish_reason == "tool_calls"
+        assert result.usage is not None and result.usage.prompt_tokens == 10
+
+    asyncio.run(run())

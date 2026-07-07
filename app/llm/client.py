@@ -408,6 +408,99 @@ class LLMResponse:
     usage: TokenUsage | None = None
 
 
+def _parse_usage(raw_usage) -> TokenUsage | None:
+    if raw_usage is None:
+        return None
+    return TokenUsage(
+        prompt_tokens=getattr(raw_usage, "prompt_tokens", 0) or 0,
+        completion_tokens=getattr(raw_usage, "completion_tokens", 0) or 0,
+        total_tokens=getattr(raw_usage, "total_tokens", 0) or 0,
+    )
+
+
+def _parse_nonstream_tool_response(resp) -> LLMResponse:
+    choice = resp.choices[0]
+    msg = choice.message
+
+    tool_calls = []
+    if msg.tool_calls:
+        for tc in msg.tool_calls:
+            tool_calls.append(ToolCallRequest(
+                id=tc.id,
+                name=tc.function.name,
+                arguments=tc.function.arguments,
+            ))
+
+    return LLMResponse(
+        content=msg.content,
+        tool_calls=tool_calls,
+        finish_reason=choice.finish_reason,
+        usage=_parse_usage(getattr(resp, "usage", None)),
+    )
+
+
+async def _parse_stream_tool_response(resp, should_cancel: ShouldCancel) -> LLMResponse:
+    content_parts: list[str] = []
+    finish_reason: str | None = None
+    usage: TokenUsage | None = None
+    tool_map: dict[int, dict[str, str]] = {}
+
+    while True:
+        try:
+            chunk = await _stream_chunk_with_cancel(resp, should_cancel)
+        except StopAsyncIteration:
+            break
+
+        if getattr(chunk, "usage", None) is not None:
+            usage = _parse_usage(chunk.usage)
+
+        if not getattr(chunk, "choices", None):
+            continue
+        choice = chunk.choices[0]
+        if getattr(choice, "finish_reason", None):
+            finish_reason = choice.finish_reason
+        delta = getattr(choice, "delta", None)
+        if delta is None:
+            continue
+
+        delta_content = getattr(delta, "content", None)
+        if delta_content:
+            content_parts.append(delta_content)
+
+        delta_tool_calls = getattr(delta, "tool_calls", None) or []
+        for tc in delta_tool_calls:
+            idx = getattr(tc, "index", 0) or 0
+            entry = tool_map.setdefault(idx, {"id": "", "name": "", "arguments": ""})
+            tc_id = getattr(tc, "id", None)
+            if tc_id:
+                entry["id"] = tc_id
+            fn = getattr(tc, "function", None)
+            if fn is not None:
+                fn_name = getattr(fn, "name", None)
+                if fn_name:
+                    entry["name"] = fn_name
+                fn_args = getattr(fn, "arguments", None)
+                if fn_args:
+                    entry["arguments"] += fn_args
+
+    tool_calls: list[ToolCallRequest] = []
+    for idx in sorted(tool_map.keys()):
+        entry = tool_map[idx]
+        tool_calls.append(ToolCallRequest(
+            id=entry["id"] or f"stream-tool-{idx}",
+            name=entry["name"],
+            arguments=entry["arguments"] or "{}",
+        ))
+
+    content = "".join(content_parts) or None
+    return LLMResponse(
+        content=content,
+        tool_calls=tool_calls,
+        finish_reason=finish_reason,
+        usage=usage,
+    )
+
+
 async def complete_with_tools(
     messages: list[dict],
     tools: list[dict],
@@ -424,47 +517,30 @@ async def complete_with_tools(
         max_tokens,
     )
     kwargs["tools"] = tools
-    request = {"messages": messages, **_logged_kwargs(kwargs)}
+    use_stream = bool(getattr(cfg, "stream", False))
+    request = {"messages": messages, "stream": use_stream, **_logged_kwargs(kwargs)}
 
     try:
-        completion_task = asyncio.create_task(_with_llm_retries(
-            "tool_completion",
-            lambda: litellm.acompletion(messages=messages, **kwargs),
-        ))
-        resp = await _wait_with_cancel(completion_task, should_cancel)
-        choice = resp.choices[0]
-        msg = choice.message
+        if use_stream:
+            stream_task = asyncio.create_task(_with_llm_retries(
+                "tool_completion_stream",
+                lambda: litellm.acompletion(messages=messages, stream=True, **kwargs),
+            ))
+            resp = await _wait_with_cancel(stream_task, should_cancel)
+            result = await _parse_stream_tool_response(resp, should_cancel)
+        else:
+            completion_task = asyncio.create_task(_with_llm_retries(
+                "tool_completion",
+                lambda: litellm.acompletion(messages=messages, **kwargs),
+            ))
+            resp = await _wait_with_cancel(completion_task, should_cancel)
+            result = _parse_nonstream_tool_response(resp)
 
-        tool_calls = []
-        if msg.tool_calls:
-            for tc in msg.tool_calls:
-                tool_calls.append(ToolCallRequest(
-                    id=tc.id,
-                    name=tc.function.name,
-                    arguments=tc.function.arguments,
-                ))
-
-        usage = None
-        if getattr(resp, "usage", None):
-            u = resp.usage
-            usage = TokenUsage(
-                prompt_tokens=getattr(u, "prompt_tokens", 0) or 0,
-                completion_tokens=getattr(u, "completion_tokens", 0) or 0,
-                total_tokens=getattr(u, "total_tokens", 0) or 0,
-            )
-
-        result = LLMResponse(
-            content=msg.content,
-            tool_calls=tool_calls,
-            finish_reason=choice.finish_reason,
-            usage=usage,
-        )
         _log_llm_success("tool_completion", request, {
             "content": result.content,
             "tool_calls": [tc.__dict__ for tc in result.tool_calls],
             "finish_reason": result.finish_reason,
             "usage": result.usage.__dict__ if result.usage else None,
-            "raw": _jsonable(resp),
         })
         return result
     except asyncio.CancelledError:
