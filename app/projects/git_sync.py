@@ -442,11 +442,21 @@ async def test_project_publish_connection(project: Project) -> dict:
         return {"ok": False, "error": f"连接失败: {str(exc)[:200]}"}
 
 
-async def publish_project_to_git(project_id: str, *, triggered_by: int = 0) -> None:
-    """Push the project worktree to a separate publish remote."""
+async def _publish_project_to_git(
+    project_id: str,
+    *,
+    triggered_by: int = 0,
+    require_config: bool,
+    require_enabled: bool = False,
+    raise_on_error: bool = True,
+    allow_source_sync_locks: bool = False,
+) -> bool:
+    """Push the project worktree to the publish remote."""
     lock = _get_sync_lock(f"{project_id}:publish")
     if lock.locked():
-        raise RuntimeError("该项目已有发布正在执行")
+        if raise_on_error:
+            raise RuntimeError("该项目已有发布正在执行")
+        return False
 
     async with lock:
         async with async_session() as db:
@@ -455,20 +465,35 @@ async def publish_project_to_git(project_id: str, *, triggered_by: int = 0) -> N
             )).scalar_one_or_none()
             if not project:
                 raise RuntimeError(f"Project {project_id} not found")
+            if require_enabled and not project.publish_enabled:
+                logger.info("Auto publish skipped for project %s: publish disabled", project_id)
+                return False
             if not project.publish_repo_url or not project.publish_auth_token:
-                raise RuntimeError("发布仓库配置不完整")
-            repo_ids = list(
-                (
-                    await db.execute(
-                        select(ProjectSourceRepository.id).where(
-                            ProjectSourceRepository.project_id == project_id
+                if require_config:
+                    raise RuntimeError("发布仓库配置不完整")
+                logger.info("Auto publish skipped for project %s: publish config incomplete", project_id)
+                return False
+            if not allow_source_sync_locks:
+                repo_ids = list(
+                    (
+                        await db.execute(
+                            select(ProjectSourceRepository.id).where(
+                                ProjectSourceRepository.project_id == project_id
+                            )
                         )
-                    )
-                ).scalars().all()
-            )
-            for repo_id in repo_ids:
-                if _get_sync_lock(f"{project_id}:{repo_id}").locked():
-                    raise RuntimeError("该项目已有源仓库同步正在执行，无法发布")
+                    ).scalars().all()
+                )
+                for repo_id in repo_ids:
+                    if _get_sync_lock(f"{project_id}:{repo_id}").locked():
+                        raise RuntimeError("该项目已有源仓库同步正在执行，无法发布")
+            else:
+                repo_ids = []
+
+            if allow_source_sync_locks:
+                logger.debug(
+                    "Publishing project %s while source sync lock may be active",
+                    project_id,
+                )
 
             project.last_publish_status = "syncing"
             project.last_publish_error = ""
@@ -489,6 +514,7 @@ async def publish_project_to_git(project_id: str, *, triggered_by: int = 0) -> N
                 )
                 await db.commit()
             logger.info("Git publish completed for project %s by user %s", project_id, triggered_by)
+            return True
         except Exception as exc:
             logger.exception("Git publish failed for project %s", project_id)
             async with async_session() as db:
@@ -501,7 +527,36 @@ async def publish_project_to_git(project_id: str, *, triggered_by: int = 0) -> N
                     )
                 )
                 await db.commit()
-            raise
+            if raise_on_error:
+                raise
+            return False
+
+
+async def publish_project_to_git(project_id: str, *, triggered_by: int = 0) -> None:
+    """Push the project worktree to a separate publish remote."""
+    await _publish_project_to_git(
+        project_id,
+        triggered_by=triggered_by,
+        require_config=True,
+    )
+
+
+async def maybe_auto_publish_project_to_git(
+    project_id: str,
+    *,
+    triggered_by: int = 0,
+    reason: str = "auto",
+) -> bool:
+    """Best-effort publish after automatic wiki updates."""
+    logger.info("Auto publish requested for project %s (%s)", project_id, reason)
+    return await _publish_project_to_git(
+        project_id,
+        triggered_by=triggered_by,
+        require_config=False,
+        require_enabled=True,
+        raise_on_error=False,
+        allow_source_sync_locks=True,
+    )
 
 
 def _list_source_files_under(source_root: Path) -> list[Path]:

@@ -136,12 +136,55 @@ def test_execute_clears_previous_error_on_success():
                 "app.ingest.queue.auto_ingest",
                 ingest,
             ):
-                await queue._execute("job-1", "p1", "/data/proj", "/tmp/doc.pdf")
+                with patch(
+                    "app.projects.git_sync.maybe_auto_publish_project_to_git",
+                    AsyncMock(),
+                    create=True,
+                ):
+                    await queue._execute("job-1", "p1", "/data/proj", "/tmp/doc.pdf")
 
         final_update = update.await_args_list[-1].kwargs
         assert final_update["status"] == "done"
         assert final_update["error"] is None
         assert ingest.await_args.kwargs["project_id"] == "p1"
+
+    asyncio.run(run())
+
+
+def test_execute_auto_publishes_when_ingest_writes_wiki_files():
+    queue = IngestQueue()
+
+    async def run():
+        publisher = AsyncMock()
+        with patch.object(queue, "_update_job", AsyncMock()):
+            with patch("app.ingest.queue.auto_ingest", AsyncMock(return_value=["wiki/doc.md"])):
+                with patch(
+                    "app.projects.git_sync.maybe_auto_publish_project_to_git",
+                    publisher,
+                    create=True,
+                ):
+                    await queue._execute("job-1", "p1", "/data/proj", "/tmp/doc.pdf")
+
+        publisher.assert_awaited_once_with("p1", triggered_by=0, reason="ingest:job-1")
+
+    asyncio.run(run())
+
+
+def test_execute_skips_auto_publish_when_ingest_writes_no_files():
+    queue = IngestQueue()
+
+    async def run():
+        publisher = AsyncMock()
+        with patch.object(queue, "_update_job", AsyncMock()):
+            with patch("app.ingest.queue.auto_ingest", AsyncMock(return_value=[])):
+                with patch(
+                    "app.projects.git_sync.maybe_auto_publish_project_to_git",
+                    publisher,
+                    create=True,
+                ):
+                    await queue._execute("job-1", "p1", "/data/proj", "/tmp/doc.pdf")
+
+        publisher.assert_not_awaited()
 
     asyncio.run(run())
 

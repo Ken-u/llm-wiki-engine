@@ -382,6 +382,14 @@ class IngestQueue:
                 error=None,
                 completed_at=datetime.now(timezone.utc),
             )
+            if written:
+                from app.projects.git_sync import maybe_auto_publish_project_to_git
+
+                await maybe_auto_publish_project_to_git(
+                    project_id,
+                    triggered_by=0,
+                    reason=f"ingest:{job_id}",
+                )
         except JobPaused:
             job = await self._get_job(job_id)
             if job and job.status == "paused":

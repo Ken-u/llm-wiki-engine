@@ -16,6 +16,7 @@ from app.auth.models import User
 from app.database import get_db
 from app.feedback import service
 from app.feedback.queue import trigger_recompile, trigger_reevaluate
+from app.projects.git_sync import maybe_auto_publish_project_to_git
 
 router = APIRouter(prefix="/api/projects/{project_id}/feedback", tags=["feedback"])
 
@@ -330,7 +331,13 @@ async def _apply_wiki_changes(
                 with open(full_path, "w", encoding="utf-8") as f:
                     f.write(content)
 
-        _git_commit_snapshot(disk_path, f"feedback-apply: task {task_id[:8]}")
+        changed = _git_commit_snapshot(disk_path, f"feedback-apply: task {task_id[:8]}")
+        if changed:
+            await maybe_auto_publish_project_to_git(
+                project_id,
+                triggered_by=0,
+                reason=f"feedback:{task_id}",
+            )
     except Exception:
         _git_rollback(disk_path)
         raise
@@ -352,14 +359,22 @@ def _ensure_git(path: str) -> None:
         )
 
 
-def _git_commit_snapshot(path: str, message: str) -> None:
+def _git_commit_snapshot(path: str, message: str) -> bool:
     """Stage all and commit. Silently succeeds if nothing to commit."""
     import subprocess
     subprocess.run(["git", "add", "-A"], cwd=path, capture_output=True)
+    status = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=path,
+        capture_output=True,
+        text=True,
+    )
+    changed = bool(status.stdout.strip())
     subprocess.run(
         ["git", "commit", "-m", message, "--allow-empty-message"],
         cwd=path, capture_output=True,
     )
+    return changed
 
 
 def _git_rollback(path: str) -> None:
