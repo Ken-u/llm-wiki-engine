@@ -148,41 +148,46 @@ async def chat(
                 })
             await _save_conversations(project.disk_path, convs)
 
-        async for event in agent_service.agent_toolcall_chat(
-            db,
-            [project],
-            body.message,
-            llm_history,
-            "",
-            should_cancel=should_cancel,
-        ):
-            payload = json.loads(event)
-            if "token" in payload:
-                collected_tokens.append(payload["token"])
-            if payload.get("done"):
-                collected_traces[:] = payload.get("tool_traces", [])
-                await persist_messages(
-                    compressed_history=payload.get("compressed_history"),
-                )
-                payload["conversation_id"] = conv_id
-            yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+        try:
+            async for event in agent_service.agent_toolcall_chat(
+                db,
+                [project],
+                body.message,
+                llm_history,
+                "",
+                should_cancel=should_cancel,
+            ):
+                payload = json.loads(event)
+                if "token" in payload:
+                    collected_tokens.append(payload["token"])
+                if payload.get("done"):
+                    collected_traces[:] = payload.get("tool_traces", [])
+                    await persist_messages(
+                        compressed_history=payload.get("compressed_history"),
+                    )
+                    payload["conversation_id"] = conv_id
+                yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
-        if await should_cancel():
-            return
+            if await should_cancel():
+                return
 
-        await persist_messages()
-        if collected_traces:
-            from app.feedback.queue import maybe_trigger_feedback
-            asyncio.create_task(
-                maybe_trigger_feedback(
-                    project_id=project.id,
-                    conversation_id=conv_id,
-                    agent_id=None,
-                    user_message=body.message,
-                    assistant_answer="".join(collected_tokens),
-                    tool_traces=collected_traces,
+            await persist_messages()
+            if collected_traces:
+                from app.feedback.queue import maybe_trigger_feedback
+                asyncio.create_task(
+                    maybe_trigger_feedback(
+                        project_id=project.id,
+                        conversation_id=conv_id,
+                        agent_id=None,
+                        user_message=body.message,
+                        assistant_answer="".join(collected_tokens),
+                        tool_traces=collected_traces,
+                    )
                 )
-            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            yield f"data: {json.dumps({'error': str(exc)}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(sse_stream(), media_type="text/event-stream")
 

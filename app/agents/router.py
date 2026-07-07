@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime
 
@@ -330,29 +331,34 @@ async def agent_chat(
     async def sse_stream():
         collected_tokens: list[str] = []
         persisted_id: str | None = conv_id
-        async for event in service.agent_toolcall_chat(
-            db, projects, body.message, history, agent.system_prompt,
-            system_prompt_override=agent.system_prompt_override or "",
-            max_tool_calls=agent.max_tool_calls,
-            debug_result_limit=agent.debug_result_limit,
-            should_cancel=should_cancel,
-        ):
-            payload = json.loads(event)
-            if "token" in payload:
-                collected_tokens.append(payload["token"])
-            if payload.get("done"):
-                conv = conversations.append_turn(
-                    get_config().server.projects_dir,
-                    agent_id=agent.id,
-                    user_id=user.id,
-                    conversation_id=persisted_id,
-                    user_message=body.message,
-                    assistant_answer="".join(collected_tokens),
-                    compressed_history=payload.get("compressed_history"),
-                )
-                persisted_id = conv["id"]
-                payload["conversation_id"] = persisted_id
-            yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+        try:
+            async for event in service.agent_toolcall_chat(
+                db, projects, body.message, history, agent.system_prompt,
+                system_prompt_override=agent.system_prompt_override or "",
+                max_tool_calls=agent.max_tool_calls,
+                debug_result_limit=agent.debug_result_limit,
+                should_cancel=should_cancel,
+            ):
+                payload = json.loads(event)
+                if "token" in payload:
+                    collected_tokens.append(payload["token"])
+                if payload.get("done"):
+                    conv = conversations.append_turn(
+                        get_config().server.projects_dir,
+                        agent_id=agent.id,
+                        user_id=user.id,
+                        conversation_id=persisted_id,
+                        user_message=body.message,
+                        assistant_answer="".join(collected_tokens),
+                        compressed_history=payload.get("compressed_history"),
+                    )
+                    persisted_id = conv["id"]
+                    payload["conversation_id"] = persisted_id
+                yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            yield f"data: {json.dumps({'error': str(exc)}, ensure_ascii=False)}\n\n"
 
     from app.feedback.trigger import wrap_agent_sse
     wrapped = wrap_agent_sse(
