@@ -18,6 +18,7 @@ from app.auth.deps import verify_password, create_access_token
 from app.auth.models import User
 from app.config import get_config
 from app.database import get_db
+from app.llm.model_select import parse_virtual_model
 
 router = APIRouter(prefix="/api/public/agents", tags=["public-agents"])
 
@@ -26,6 +27,7 @@ class PublicChatRequest(BaseModel):
     message: str = Field(min_length=1)
     conversation_id: str | None = None
     use_fast_model: bool = False
+    model: str | None = None
 
 
 class PublicAgentInfo(BaseModel):
@@ -241,6 +243,9 @@ async def public_agent_chat(
     async def should_cancel() -> bool:
         return await request.is_disconnected()
 
+    _, fast_from_model = parse_virtual_model(body.model or "")
+    use_fast_model = body.use_fast_model or fast_from_model
+
     async def sse_stream():
         collected_tokens: list[str] = []
         persisted_id: str | None = conv_id
@@ -251,7 +256,7 @@ async def public_agent_chat(
                 max_tool_calls=agent.max_tool_calls,
                 debug_result_limit=agent.debug_result_limit,
                 should_cancel=should_cancel,
-                use_fast_model=body.use_fast_model,
+                use_fast_model=use_fast_model,
             ):
                 payload = json.loads(event)
                 if "token" in payload:

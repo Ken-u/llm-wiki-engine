@@ -19,6 +19,11 @@ from app.auth.deps import get_current_user
 from app.auth.models import User
 from app.database import get_db
 from app.knowledge.lookup import knowledge_lookup
+from app.llm.model_select import (
+    fast_model_available,
+    fast_virtual_model_id,
+    parse_virtual_model,
+)
 from app.projects.models import Project
 from app.projects.service import check_membership
 
@@ -101,10 +106,16 @@ async def list_models(
 
     models = []
     for proj in projects:
+        model_id = proj.knowledge_api_model_name
         models.append(ModelInfo(
-            id=proj.knowledge_api_model_name,
+            id=model_id,
             created=int(proj.created_at.timestamp()) if proj.created_at else 0,
         ))
+        if fast_model_available():
+            models.append(ModelInfo(
+                id=fast_virtual_model_id(model_id),
+                created=int(proj.created_at.timestamp()) if proj.created_at else 0,
+            ))
 
     return ModelsResponse(data=models)
 
@@ -129,10 +140,11 @@ async def chat_completions(
             "暂不支持流式响应，请设置 stream=false。",
         )
 
-    # Resolve model_name -> project
+    # Resolve model_name -> project (supports ``{model_id}-fast`` suffix)
+    base_model, use_fast_model = parse_virtual_model(body.model)
     project = (await db.execute(
         select(Project).where(
-            Project.knowledge_api_model_name == body.model,
+            Project.knowledge_api_model_name == base_model,
             Project.knowledge_api_enabled == True,  # noqa: E712
         )
     )).scalar_one_or_none()
@@ -140,7 +152,7 @@ async def chat_completions(
     if not project:
         raise HTTPException(
             status.HTTP_404_NOT_FOUND,
-            f"未找到模型 '{body.model}'，请确认模型名称正确且已启用。",
+            f"未找到模型 '{base_model}'，请确认模型名称正确且已启用。",
         )
 
     # Verify membership
@@ -170,6 +182,7 @@ async def chat_completions(
     # Run knowledge lookup
     content = await knowledge_lookup(
         project, user_message, system_prompt, max_tool_calls=max_tool_calls,
+        use_fast_model=use_fast_model,
     )
 
     # Estimate token usage

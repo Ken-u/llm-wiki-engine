@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -98,10 +99,15 @@ def test_public_skill_download_rejects_invalid_token(tmp_path):
 
 
 def test_skill_chat_resolves_agent_from_token_without_agent_id(tmp_path, monkeypatch):
-    async def fake_collect_answer(db, agent, message):
-        assert agent.id == "agent-1"
-        assert message == "查一下 GMS"
-        return "GMS answer", []
+    seen: dict[str, object] = {}
+
+    async def fake_toolcall_chat(*_args, **kwargs):
+        seen.update(kwargs)
+        async def gen():
+            yield json.dumps({"token": "GMS answer"})
+            yield json.dumps({"done": True})
+        async for item in gen():
+            yield item
 
     async def run():
         client, Session = await _build_client(tmp_path)
@@ -109,9 +115,10 @@ def test_skill_chat_resolves_agent_from_token_without_agent_id(tmp_path, monkeyp
             agent = await db.get(Agent, "agent-1")
             token = await service.regenerate_skill_token(db, agent)
 
+        monkeypatch.setattr("app.agents.skill_router.fast_model_available", lambda: True)
         monkeypatch.setattr(
-            "app.agents.skill_router.collect_skill_answer",
-            fake_collect_answer,
+            "app.agents.skill_router.service.agent_toolcall_chat",
+            fake_toolcall_chat,
         )
 
         try:
@@ -121,7 +128,8 @@ def test_skill_chat_resolves_agent_from_token_without_agent_id(tmp_path, monkeyp
                 json={"message": "查一下 GMS"},
             )
             assert response.status_code == 200
-            assert response.json() == {"answer": "GMS answer", "sources": []}
+            assert response.json()["answer"] == "GMS answer"
+            assert seen.get("use_fast_model") is True
         finally:
             await client.aclose()
             app.dependency_overrides.clear()

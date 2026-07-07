@@ -28,12 +28,14 @@ async def run_agent_turn_collect(
     ctx: ToolContext,
     *,
     max_tool_calls: int = 10,
+    use_fast_model: bool = False,
 ) -> str:
     """Run an agent turn and collect all token events into a single string."""
     parts: list[str] = []
     async for event_str in run_agent_turn(
         message, history, system_prompt, ctx,
         max_tool_calls=max_tool_calls,
+        use_fast_model=use_fast_model,
     ):
         try:
             event = json.loads(event_str)
@@ -49,6 +51,8 @@ async def knowledge_lookup(
     message: str,
     system_prompt: str,
     max_tool_calls: int = 10,
+    *,
+    use_fast_model: bool = False,
 ) -> str:
     """Main entry point for knowledge lookup.
 
@@ -72,6 +76,7 @@ async def knowledge_lookup(
     text = await run_agent_turn_collect(
         message, [], system_prompt, ctx,
         max_tool_calls=max_tool_calls,
+        use_fast_model=use_fast_model,
     )
     return text or "知识库中未找到相关信息。"
 

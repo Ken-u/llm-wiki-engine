@@ -68,7 +68,7 @@ def _model_name(cfg=None) -> str:
 def _common_kwargs(temperature: float, max_tokens: int, cfg=None) -> dict:
     cfg = cfg or get_config().llm
     kwargs: dict = {
-        "model": _model_name(),
+        "model": _model_name(cfg),
         "temperature": temperature,
         "max_tokens": max_tokens,
         "api_key": cfg.api_key or None,

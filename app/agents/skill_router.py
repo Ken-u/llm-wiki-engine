@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.agents import service
 from app.agents.models import Agent
 from app.agents.skill_refs import sign_source_ref, verify_source_ref
+from app.llm.model_select import fast_model_available
 from app.database import get_db
 from app.documents.service import read_document_content
 from pathlib import Path
@@ -139,6 +140,7 @@ async def collect_skill_answer(
         system_prompt_override=agent.system_prompt_override or "",
         max_tool_calls=agent.max_tool_calls,
         debug_result_limit=agent.debug_result_limit,
+        use_fast_model=fast_model_available(),
     ):
         try:
             payload = json.loads(event)
