@@ -352,6 +352,41 @@ def test_runtime_wiki_missing_page_rejects_low_similarity_vector_match(monkeypat
         assert resp.status_code == 404
 
 
+def test_runtime_chat_aborts_when_client_disconnects(monkeypatch, tmp_path: Path):
+    config = _write_runtime_fixture(tmp_path)
+    load_runtime_config(config)
+
+    async def fake_run_agent_turn(*_args, should_cancel=None, **_kwargs) -> AsyncGenerator[str, None]:
+        if should_cancel is not None and await should_cancel():
+            return
+        yield json.dumps({"token": "should-not-reach"})
+        yield json.dumps({"done": True, "tool_traces": []})
+
+    import app.runtime.router as runtime_router
+
+    monkeypatch.setattr(runtime_router, "run_agent_turn", fake_run_agent_turn)
+
+    async def fake_is_disconnected(self) -> bool:
+        return True
+
+    from app.runtime_main import app
+    from starlette.requests import Request
+
+    monkeypatch.setattr(Request, "is_disconnected", fake_is_disconnected)
+
+    with TestClient(app) as client:
+        with client.stream(
+            "POST",
+            "/api/chat",
+            json={"message": "复杂问题", "stream": True, "mode": "agent"},
+        ) as resp:
+            assert resp.status_code == 200
+            body = "".join(resp.iter_text())
+
+    assert "should-not-reach" not in body
+    assert "event: token" not in body
+
+
 def test_runtime_openai_stream_with_agent(monkeypatch, tmp_path: Path):
     config = _write_runtime_fixture(tmp_path)
     load_runtime_config(config)

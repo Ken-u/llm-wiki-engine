@@ -15,7 +15,7 @@ from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Re
 from pydantic import BaseModel, Field
 from starlette.responses import PlainTextResponse, StreamingResponse
 
-from app.agents.orchestrator import _build_system_prompt, run_agent_turn
+from app.agents.orchestrator import ShouldCancel, _build_system_prompt, run_agent_turn
 from app.agents.tools import ToolContext
 from app.case_index.builder import load_manifest
 from app.case_index.search import read_case_source, search_cases
@@ -532,16 +532,24 @@ async def case_response(case_id: str):
     return result
 
 
+def _disconnect_checker(request: Request) -> ShouldCancel:
+    async def check() -> bool:
+        return await request.is_disconnected()
+
+    return check
+
+
 @router.post("/chat")
-async def chat_response(body: RuntimeChatRequest):
+async def chat_response(body: RuntimeChatRequest, request: Request):
+    should_cancel = _disconnect_checker(request)
     if body.stream:
-        return StreamingResponse(_chat_sse(body), media_type="text/event-stream")
+        return StreamingResponse(_chat_sse(body, should_cancel), media_type="text/event-stream")
 
     answer_parts: list[str] = []
     tool_traces: list[dict] = []
     references: list[dict] = []
     used_case_library = False
-    async for event in _chat_events(body):
+    async for event in _chat_events(body, should_cancel):
         if event["event"] == "token":
             answer_parts.append(event["data"].get("text", ""))
         elif event["event"] == "tool_call":
@@ -579,9 +587,9 @@ async def _resolve_missing_wiki_page(
     return resolved.path, resolved.info
 
 
-async def _chat_sse(body: RuntimeChatRequest) -> AsyncGenerator[str, None]:
+async def _chat_sse(body: RuntimeChatRequest, should_cancel: ShouldCancel = None) -> AsyncGenerator[str, None]:
     try:
-        async for event in _chat_events(body):
+        async for event in _chat_events(body, should_cancel):
             yield f"event: {event['event']}\n"
             yield f"data: {json.dumps(event['data'], ensure_ascii=False)}\n\n"
     except Exception as exc:
@@ -589,7 +597,7 @@ async def _chat_sse(body: RuntimeChatRequest) -> AsyncGenerator[str, None]:
         yield f"data: {json.dumps({'message': str(exc)}, ensure_ascii=False)}\n\n"
 
 
-async def _chat_events(body: RuntimeChatRequest) -> AsyncGenerator[dict, None]:
+async def _chat_events(body: RuntimeChatRequest, should_cancel: ShouldCancel = None) -> AsyncGenerator[dict, None]:
     settings = get_runtime_config()
     mode = body.mode or settings.runtime.mode
     project = get_knowledge_project(settings)
@@ -628,6 +636,7 @@ async def _chat_events(body: RuntimeChatRequest) -> AsyncGenerator[dict, None]:
         system_prompt_override=settings.knowledge.system_prompt_override,
         max_tool_calls=settings.runtime.max_tool_calls,
         debug_result_limit=settings.runtime.debug_result_limit,
+        should_cancel=should_cancel,
     ):
         payload = json.loads(raw_event)
         if "token" in payload:
@@ -725,7 +734,7 @@ async def models_response():
 
 
 @openai_router.post("/chat/completions")
-async def openai_chat_response(body: OpenAIChatRequest):
+async def openai_chat_response(body: OpenAIChatRequest, request: Request):
     if body.tools or body.tool_choice or body.functions:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
@@ -746,12 +755,13 @@ async def openai_chat_response(body: OpenAIChatRequest):
         if m.role in ("user", "assistant")
     ]
     runtime_body = RuntimeChatRequest(message=user_message, history=history, stream=body.stream)
+    should_cancel = _disconnect_checker(request)
 
     if body.stream:
-        return StreamingResponse(_openai_sse(runtime_body, body.model), media_type="text/event-stream")
+        return StreamingResponse(_openai_sse(runtime_body, body.model, should_cancel), media_type="text/event-stream")
 
     answer_parts: list[str] = []
-    async for event in _chat_events(runtime_body):
+    async for event in _chat_events(runtime_body, should_cancel):
         if event["event"] == "token":
             answer_parts.append(event["data"].get("text", ""))
 
@@ -770,10 +780,14 @@ async def openai_chat_response(body: OpenAIChatRequest):
     }
 
 
-async def _openai_sse(body: RuntimeChatRequest, model: str) -> AsyncGenerator[str, None]:
+async def _openai_sse(
+    body: RuntimeChatRequest,
+    model: str,
+    should_cancel: ShouldCancel = None,
+) -> AsyncGenerator[str, None]:
     chat_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
     created = int(time.time())
-    async for event in _chat_events(body):
+    async for event in _chat_events(body, should_cancel):
         if event["event"] != "token":
             continue
         chunk = {

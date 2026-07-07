@@ -227,3 +227,47 @@ def test_debug_log_without_context_writes_one_file_per_event(tmp_path):
 
     files = list(log_dir.glob("*.json"))
     assert len(files) == 2
+
+
+def test_complete_with_tools_can_be_cancelled_by_disconnect_signal():
+    async def very_slow_completion(**_kwargs):
+        await asyncio.sleep(10)
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    finish_reason="stop",
+                    message=SimpleNamespace(content="late", tool_calls=[]),
+                ),
+            ],
+            usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1, total_tokens=2),
+        )
+
+    async def should_cancel() -> bool:
+        return True
+
+    async def run():
+        cfg = SimpleNamespace(
+            llm=SimpleNamespace(
+                provider="openai",
+                model="test-model",
+                api_key="secret-key",
+                api_base=None,
+                debug_llm_log="",
+                chat_temperature=0.7,
+                timeout=300,
+            )
+        )
+        litellm = SimpleNamespace(acompletion=very_slow_completion)
+        with patch.object(client, "get_config", return_value=cfg):
+            with patch.object(client, "_litellm", return_value=litellm):
+                try:
+                    await client.complete_with_tools(
+                        [{"role": "user", "content": "cancel"}],
+                        [{"type": "function", "function": {"name": "search_wiki"}}],
+                        should_cancel=should_cancel,
+                    )
+                except asyncio.CancelledError:
+                    return
+                raise AssertionError("Expected cancellation when client disconnects")
+
+    asyncio.run(run())

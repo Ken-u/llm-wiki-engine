@@ -13,7 +13,10 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
+from collections.abc import Awaitable, Callable
 from typing import AsyncGenerator
+
+ShouldCancel = Callable[[], Awaitable[bool]] | None
 
 from app.agents.context_compress import (
     compress_agent_context,
@@ -106,6 +109,13 @@ def _truncate_for_debug(result: dict, limit: int = DEFAULT_DEBUG_RESULT_LIMIT) -
     return out
 
 
+async def _abort_if_cancelled(should_cancel: ShouldCancel) -> bool:
+    if should_cancel is not None and await should_cancel():
+        logger.info("Client disconnected, aborting agent turn")
+        return True
+    return False
+
+
 def _done_event(
     traces: list[ToolTrace],
     *,
@@ -131,6 +141,7 @@ async def run_agent_turn(
     system_prompt_override: str = "",
     max_tool_calls: int = DEFAULT_MAX_TOOL_CALLS,
     debug_result_limit: int = DEFAULT_DEBUG_RESULT_LIMIT,
+    should_cancel: ShouldCancel = None,
 ) -> AsyncGenerator[str, None]:
     """Run one agent turn: tool-calling loop then stream final answer.
 
@@ -157,9 +168,20 @@ async def run_agent_turn(
 
     # Upper bound on LLM rounds: max_tool_calls + 2 to allow rejection + final text
     for _round in range(max_tool_calls + 2):
+        if await _abort_if_cancelled(should_cancel):
+            finish_debug_llm_log_context()
+            return
+
         resp: LLMResponse = await complete_with_tools(
-            messages, tool_defs, max_tokens=4096,
+            messages,
+            tool_defs,
+            max_tokens=4096,
+            should_cancel=should_cancel,
         )
+
+        if await _abort_if_cancelled(should_cancel):
+            finish_debug_llm_log_context()
+            return
 
         prompt_tokens, usage_source = resolve_prompt_tokens(
             messages,
@@ -189,6 +211,10 @@ async def run_agent_turn(
             threshold=cfg.context_compress_threshold,
             target=cfg.context_compress_target,
         )
+
+        if await _abort_if_cancelled(should_cancel):
+            finish_debug_llm_log_context()
+            return
 
         if needs_compress:
             yield json.dumps({
@@ -237,6 +263,10 @@ async def run_agent_turn(
         messages.append(assistant_msg)
 
         for tc in resp.tool_calls:
+            if await _abort_if_cancelled(should_cancel):
+                finish_debug_llm_log_context()
+                return
+
             try:
                 args = json.loads(tc.arguments)
             except json.JSONDecodeError:
@@ -286,6 +316,7 @@ async def run_agent_turn(
         messages,
         temperature=cfg.chat_temperature,
         max_tokens=4096,
+        should_cancel=should_cancel,
     ):
         yield json.dumps({"token": token})
 

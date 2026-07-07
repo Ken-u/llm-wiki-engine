@@ -16,6 +16,7 @@ from app.config import get_config, normalize_litellm_api_base
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
+ShouldCancel = Callable[[], Awaitable[bool]] | None
 MAX_LLM_ATTEMPTS = 4
 LLM_RETRY_DELAYS = (1.0, 2.0, 4.0)
 _TRANSIENT_ERROR_MARKERS = (
@@ -247,6 +248,19 @@ async def _with_llm_retries(label: str, fn: Callable[[], Awaitable[T]]) -> T:
     raise last_exc
 
 
+async def _wait_with_cancel(task: asyncio.Task[T], should_cancel: ShouldCancel) -> T:
+    if should_cancel is None:
+        return await task
+    while not task.done():
+        done, _ = await asyncio.wait({task}, timeout=0.2)
+        if task in done:
+            break
+        if await should_cancel():
+            task.cancel()
+            raise asyncio.CancelledError("Client disconnected")
+    return await task
+
+
 async def complete(
     system: str,
     user: str,
@@ -280,6 +294,7 @@ async def stream(
     *,
     temperature: float | None = None,
     max_tokens: int = 4096,
+    should_cancel: ShouldCancel = None,
 ) -> AsyncGenerator[str, None]:
     litellm = _litellm()
     cfg = get_config().llm
@@ -287,15 +302,21 @@ async def stream(
     request = {"messages": messages, "stream": True, **_logged_kwargs(kwargs)}
     parts: list[str] = []
     try:
-        resp = await _with_llm_retries(
+        stream_task = asyncio.create_task(_with_llm_retries(
             "stream",
             lambda: litellm.acompletion(
                 messages=messages,
                 stream=True,
                 **kwargs,
             ),
-        )
+        ))
+        resp = await _wait_with_cancel(stream_task, should_cancel)
         async for chunk in resp:
+            if should_cancel is not None and await should_cancel():
+                close = getattr(resp, "aclose", None)
+                if callable(close):
+                    await close()
+                raise asyncio.CancelledError("Client disconnected")
             delta = chunk.choices[0].delta
             if delta and delta.content:
                 parts.append(delta.content)
@@ -368,6 +389,7 @@ async def complete_with_tools(
     *,
     temperature: float | None = None,
     max_tokens: int = 4096,
+    should_cancel: ShouldCancel = None,
 ) -> LLMResponse:
     """Single LLM call with tool definitions. Returns structured response."""
     litellm = _litellm()
@@ -380,10 +402,11 @@ async def complete_with_tools(
     request = {"messages": messages, **_logged_kwargs(kwargs)}
 
     try:
-        resp = await _with_llm_retries(
+        completion_task = asyncio.create_task(_with_llm_retries(
             "tool_completion",
             lambda: litellm.acompletion(messages=messages, **kwargs),
-        )
+        ))
+        resp = await _wait_with_cancel(completion_task, should_cancel)
         choice = resp.choices[0]
         msg = choice.message
 
