@@ -56,6 +56,13 @@ class LLMConfig(BaseModel):
     ingest_temperature: float = 0.1
     chat_temperature: float = 0.7
     stream: bool = False
+    fast_provider: str | None = None
+    fast_model: str | None = None
+    fast_api_key: str = ""
+    fast_api_base: str | None = None
+    fast_timeout: int | None = None
+    fast_chat_temperature: float | None = None
+    fast_stream: bool | None = None
 
 
 class EmbeddingConfig(BaseModel):

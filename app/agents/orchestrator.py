@@ -14,6 +14,7 @@ import json
 import logging
 from dataclasses import dataclass
 from collections.abc import Awaitable, Callable
+from types import SimpleNamespace
 from typing import AsyncGenerator
 
 ShouldCancel = Callable[[], Awaitable[bool]] | None
@@ -132,6 +133,25 @@ def _done_event(
     return json.dumps(payload)
 
 
+def _resolve_chat_llm_config(base_cfg, use_fast_model: bool):
+    if not use_fast_model or not getattr(base_cfg, "fast_model", None):
+        return base_cfg
+    return SimpleNamespace(
+        provider=base_cfg.fast_provider or base_cfg.provider,
+        model=base_cfg.fast_model,
+        api_key=base_cfg.fast_api_key or base_cfg.api_key,
+        api_base=base_cfg.fast_api_base if base_cfg.fast_api_base is not None else base_cfg.api_base,
+        timeout=base_cfg.fast_timeout if base_cfg.fast_timeout is not None else base_cfg.timeout,
+        chat_temperature=(
+            base_cfg.fast_chat_temperature
+            if base_cfg.fast_chat_temperature is not None
+            else base_cfg.chat_temperature
+        ),
+        stream=base_cfg.fast_stream if base_cfg.fast_stream is not None else base_cfg.stream,
+        ingest_temperature=base_cfg.ingest_temperature,
+    )
+
+
 async def run_agent_turn(
     message: str,
     history: list[dict],
@@ -142,6 +162,7 @@ async def run_agent_turn(
     max_tool_calls: int = DEFAULT_MAX_TOOL_CALLS,
     debug_result_limit: int = DEFAULT_DEBUG_RESULT_LIMIT,
     should_cancel: ShouldCancel = None,
+    use_fast_model: bool = False,
 ) -> AsyncGenerator[str, None]:
     """Run one agent turn: tool-calling loop then stream final answer.
 
@@ -154,6 +175,7 @@ async def run_agent_turn(
     full_system = _build_system_prompt(system_prompt, ctx.ticket_project is not None, system_prompt_override)
     tool_defs = get_tool_definitions(ctx)
     cfg = get_config().llm
+    turn_llm_cfg = _resolve_chat_llm_config(cfg, use_fast_model)
 
     messages: list[dict] = [{"role": "system", "content": full_system}]
     messages.extend(history)
@@ -177,6 +199,7 @@ async def run_agent_turn(
             tool_defs,
             max_tokens=4096,
             should_cancel=should_cancel,
+            llm_cfg=turn_llm_cfg,
         )
 
         if await _abort_if_cancelled(should_cancel):
@@ -314,9 +337,10 @@ async def run_agent_turn(
     # Exhausted all rounds — hard fallback, stream without tools
     async for token in llm_stream(
         messages,
-        temperature=cfg.chat_temperature,
+        temperature=turn_llm_cfg.chat_temperature,
         max_tokens=4096,
         should_cancel=should_cancel,
+        llm_cfg=turn_llm_cfg,
     ):
         yield json.dumps({"token": token})
 

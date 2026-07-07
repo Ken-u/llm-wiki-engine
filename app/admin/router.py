@@ -32,6 +32,13 @@ class LLMSettingsResponse(BaseModel):
     ingest_temperature: float
     chat_temperature: float
     stream: bool
+    fast_provider: str | None
+    fast_model: str | None
+    fast_api_key: str
+    fast_api_base: str | None
+    fast_timeout: int | None
+    fast_chat_temperature: float | None
+    fast_stream: bool | None
 
 
 class LLMSettingsUpdate(BaseModel):
@@ -44,6 +51,13 @@ class LLMSettingsUpdate(BaseModel):
     ingest_temperature: float | None = None
     chat_temperature: float | None = None
     stream: bool | None = None
+    fast_provider: str | None = None
+    fast_model: str | None = None
+    fast_api_key: str | None = None
+    fast_api_base: str | None = None
+    fast_timeout: int | None = None
+    fast_chat_temperature: float | None = None
+    fast_stream: bool | None = None
 
 
 class EmbeddingSettingsResponse(BaseModel):
@@ -326,6 +340,13 @@ async def get_llm_settings(user: User = Depends(require_admin)):
         ingest_temperature=cfg.ingest_temperature,
         chat_temperature=cfg.chat_temperature,
         stream=cfg.stream,
+        fast_provider=cfg.fast_provider,
+        fast_model=cfg.fast_model,
+        fast_api_key=_mask_key(cfg.fast_api_key),
+        fast_api_base=cfg.fast_api_base,
+        fast_timeout=cfg.fast_timeout,
+        fast_chat_temperature=cfg.fast_chat_temperature,
+        fast_stream=cfg.fast_stream,
     )
 
 
@@ -373,8 +394,10 @@ async def test_llm(body: LLMSettingsUpdate, user: User = Depends(require_admin))
 async def update_llm_settings(body: LLMSettingsUpdate, user: User = Depends(require_admin)):
     cfg = get_config().llm
     values = body.model_dump(exclude_none=True)
-    if "api_key" in values and _is_masked(values["api_key"]):
+    if "api_key" in values and (_is_masked(values["api_key"]) or values["api_key"] == ""):
         del values["api_key"]
+    if "fast_api_key" in values and (_is_masked(values["fast_api_key"]) or values["fast_api_key"] == ""):
+        del values["fast_api_key"]
 
     await save_db_settings("llm", values)
     cfg = get_config().llm
@@ -388,6 +411,13 @@ async def update_llm_settings(body: LLMSettingsUpdate, user: User = Depends(requ
         ingest_temperature=cfg.ingest_temperature,
         chat_temperature=cfg.chat_temperature,
         stream=cfg.stream,
+        fast_provider=cfg.fast_provider,
+        fast_model=cfg.fast_model,
+        fast_api_key=_mask_key(cfg.fast_api_key),
+        fast_api_base=cfg.fast_api_base,
+        fast_timeout=cfg.fast_timeout,
+        fast_chat_temperature=cfg.fast_chat_temperature,
+        fast_stream=cfg.fast_stream,
     )
 
 
@@ -449,7 +479,7 @@ async def test_embedding(body: EmbeddingSettingsUpdate, user: User = Depends(req
 async def update_embedding_settings(body: EmbeddingSettingsUpdate, user: User = Depends(require_admin)):
     cfg = get_config().embedding
     values = body.model_dump(exclude_none=True)
-    if "api_key" in values and _is_masked(values["api_key"]):
+    if "api_key" in values and (_is_masked(values["api_key"]) or values["api_key"] == ""):
         del values["api_key"]
 
     await save_db_settings("embedding", values)
@@ -572,7 +602,7 @@ async def update_feedback_settings(body: FeedbackModelSettingsUpdate, user: User
     for flat_key, (group, attr) in field_map.items():
         if flat_key in raw:
             val = raw[flat_key]
-            if "api_key" in flat_key and _is_masked(str(val)):
+            if "api_key" in flat_key and (_is_masked(str(val)) or str(val) == ""):
                 continue
             nested[group][attr] = val
 

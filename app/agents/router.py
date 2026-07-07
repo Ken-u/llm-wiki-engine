@@ -80,6 +80,7 @@ class CreateAgentResponse(BaseModel):
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1)
     conversation_id: str | None = None
+    use_fast_model: bool = False
 
 
 class ConversationResponse(BaseModel):
@@ -338,6 +339,7 @@ async def agent_chat(
                 max_tool_calls=agent.max_tool_calls,
                 debug_result_limit=agent.debug_result_limit,
                 should_cancel=should_cancel,
+            use_fast_model=body.use_fast_model,
             ):
                 payload = json.loads(event)
                 if "token" in payload:
@@ -370,3 +372,14 @@ async def agent_chat(
         should_cancel=should_cancel,
     )
     return StreamingResponse(wrapped, media_type="text/event-stream")
+
+
+@router.get("/{agent_id}/chat/options")
+async def get_agent_chat_options(
+    agent_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await _get_agent_or_404(db, agent_id, user)
+    cfg = get_config().llm
+    return {"fast_model_enabled": bool(cfg.fast_model)}

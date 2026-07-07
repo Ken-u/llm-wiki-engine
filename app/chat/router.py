@@ -17,6 +17,7 @@ from starlette.responses import StreamingResponse
 from app.agents import service as agent_service
 from app.auth.deps import get_current_user
 from app.auth.models import User
+from app.config import get_config
 from app.database import get_db
 from app.projects.service import check_membership, get_project_or_404
 
@@ -26,6 +27,7 @@ router = APIRouter(prefix="/api/projects/{project_id}", tags=["chat"])
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1)
     conversation_id: str | None = None
+    use_fast_model: bool = False
 
 
 class ConversationResponse(BaseModel):
@@ -156,6 +158,7 @@ async def chat(
                 llm_history,
                 "",
                 should_cancel=should_cancel,
+                use_fast_model=body.use_fast_model,
             ):
                 payload = json.loads(event)
                 if "token" in payload:
@@ -190,6 +193,18 @@ async def chat(
             yield f"data: {json.dumps({'error': str(exc)}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(sse_stream(), media_type="text/event-stream")
+
+
+@router.get("/chat/options")
+async def chat_options(
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await check_membership(db, project_id, user)
+    await get_project_or_404(db, project_id)
+    cfg = get_config().llm
+    return {"fast_model_enabled": bool(cfg.fast_model)}
 
 
 @router.get("/conversations", response_model=list[ConversationResponse])

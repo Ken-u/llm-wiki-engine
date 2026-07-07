@@ -52,8 +52,8 @@ def _litellm():
     return litellm
 
 
-def _model_name() -> str:
-    cfg = get_config().llm
+def _model_name(cfg=None) -> str:
+    cfg = cfg or get_config().llm
     provider = cfg.provider
     model = cfg.model
     if "/" in model:
@@ -65,8 +65,8 @@ def _model_name() -> str:
     return f"{provider}/{model}"
 
 
-def _common_kwargs(temperature: float, max_tokens: int) -> dict:
-    cfg = get_config().llm
+def _common_kwargs(temperature: float, max_tokens: int, cfg=None) -> dict:
+    cfg = cfg or get_config().llm
     kwargs: dict = {
         "model": _model_name(),
         "temperature": temperature,
@@ -291,14 +291,15 @@ async def complete(
     *,
     temperature: float | None = None,
     max_tokens: int = 4096,
+    llm_cfg=None,
 ) -> str:
     litellm = _litellm()
-    cfg = get_config().llm
+    cfg = llm_cfg or get_config().llm
     messages = [
         {"role": "system", "content": system},
         {"role": "user", "content": user},
     ]
-    kwargs = _common_kwargs(temperature if temperature is not None else cfg.ingest_temperature, max_tokens)
+    kwargs = _common_kwargs(temperature if temperature is not None else cfg.ingest_temperature, max_tokens, cfg)
     request = {"messages": messages, **_logged_kwargs(kwargs)}
     try:
         resp = await _with_llm_retries(
@@ -319,10 +320,11 @@ async def stream(
     temperature: float | None = None,
     max_tokens: int = 4096,
     should_cancel: ShouldCancel = None,
+    llm_cfg=None,
 ) -> AsyncGenerator[str, None]:
     litellm = _litellm()
-    cfg = get_config().llm
-    kwargs = _common_kwargs(temperature if temperature is not None else cfg.chat_temperature, max_tokens)
+    cfg = llm_cfg or get_config().llm
+    kwargs = _common_kwargs(temperature if temperature is not None else cfg.chat_temperature, max_tokens, cfg)
     request = {"messages": messages, "stream": True, **_logged_kwargs(kwargs)}
     parts: list[str] = []
     try:
@@ -508,13 +510,15 @@ async def complete_with_tools(
     temperature: float | None = None,
     max_tokens: int = 4096,
     should_cancel: ShouldCancel = None,
+    llm_cfg=None,
 ) -> LLMResponse:
     """Single LLM call with tool definitions. Returns structured response."""
     litellm = _litellm()
-    cfg = get_config().llm
+    cfg = llm_cfg or get_config().llm
     kwargs = _common_kwargs(
         temperature if temperature is not None else cfg.chat_temperature,
         max_tokens,
+        cfg,
     )
     kwargs["tools"] = tools
     use_stream = bool(getattr(cfg, "stream", False))

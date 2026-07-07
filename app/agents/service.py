@@ -329,6 +329,7 @@ async def agent_toolcall_chat(
     debug_result_limit: int = 2000,
     include_ticket_project: bool = True,
     should_cancel: ShouldCancel = None,
+    use_fast_model: bool = False,
 ):
     """Agent chat via tool-calling orchestrator. Returns an async generator of SSE events.
 
@@ -350,5 +351,6 @@ async def agent_toolcall_chat(
         max_tool_calls=max_tool_calls,
         debug_result_limit=debug_result_limit,
         should_cancel=should_cancel,
+        use_fast_model=use_fast_model,
     ):
         yield event
