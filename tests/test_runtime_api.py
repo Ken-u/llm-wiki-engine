@@ -391,10 +391,7 @@ def test_runtime_openai_stream_with_agent(monkeypatch, tmp_path: Path):
     config = _write_runtime_fixture(tmp_path)
     load_runtime_config(config)
 
-    seen: dict[str, object] = {}
-
-    async def fake_run_agent_turn(*_args, **kwargs) -> AsyncGenerator[str, None]:
-        seen.update(kwargs)
+    async def fake_run_agent_turn(*_args, **_kwargs) -> AsyncGenerator[str, None]:
         yield json.dumps({"token": "hello"})
         yield json.dumps({"done": True, "tool_traces": []})
 
@@ -409,7 +406,7 @@ def test_runtime_openai_stream_with_agent(monkeypatch, tmp_path: Path):
             "POST",
             "/v1/chat/completions",
             json={
-                "model": "test-wiki-fast",
+                "model": "test-wiki",
                 "stream": True,
                 "messages": [{"role": "user", "content": "复杂问题 为什么"}],
             },
@@ -419,4 +416,3 @@ def test_runtime_openai_stream_with_agent(monkeypatch, tmp_path: Path):
         assert "chat.completion.chunk" in body
         assert "hello" in body
         assert "data: [DONE]" in body
-        assert seen.get("use_fast_model") is True

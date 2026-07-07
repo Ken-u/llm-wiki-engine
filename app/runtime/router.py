@@ -34,11 +34,6 @@ from app.knowledge.fast_lookup import (
 )
 from app.knowledge.lookup import _format_fast_result
 from app.agents.skill_refs import sign_source_ref, verify_source_ref
-from app.llm.model_select import (
-    fast_model_available,
-    fast_virtual_model_id,
-    resolve_api_use_fast_model,
-)
 from app.runtime.config import get_runtime_config, get_runtime_config_path, load_runtime_config
 from app.runtime.hooks import run_startup_hooks
 from app.runtime.projects import (
@@ -84,7 +79,6 @@ class RuntimeChatRequest(BaseModel):
     mode: Literal["auto", "agent", "fast", "rag"] | None = None
     stream: bool = True
     debug: bool = True
-    use_fast_model: bool = False
 
 
 class RuntimeSkillChatRequest(BaseModel):
@@ -285,11 +279,7 @@ async def runtime_skill_download(request: Request):
 
 @router.post("/skill/chat", response_model=RuntimeSkillChatResponse)
 async def runtime_skill_chat(body: RuntimeSkillChatRequest):
-    runtime_body = RuntimeChatRequest(
-        message=body.message,
-        stream=False,
-        use_fast_model=fast_model_available(),
-    )
+    runtime_body = RuntimeChatRequest(message=body.message, stream=False)
     answer_parts: list[str] = []
     sources_by_name: dict[str, RuntimeSkillSource] = {}
 
@@ -647,7 +637,6 @@ async def _chat_events(body: RuntimeChatRequest, should_cancel: ShouldCancel = N
         max_tool_calls=settings.runtime.max_tool_calls,
         debug_result_limit=settings.runtime.debug_result_limit,
         should_cancel=should_cancel,
-        use_fast_model=body.use_fast_model,
     ):
         payload = json.loads(raw_event)
         if "token" in payload:
@@ -717,7 +706,7 @@ class OpenAIMessage(BaseModel):
 
 
 class OpenAIChatRequest(BaseModel):
-    model: str = ""
+    model: str
     messages: list[OpenAIMessage] = Field(min_length=1)
     stream: bool = False
     temperature: float | None = None
@@ -727,43 +716,21 @@ class OpenAIChatRequest(BaseModel):
     functions: list | None = None
 
 
-def _resolve_runtime_openai_model(model: str) -> tuple[str, bool]:
-    settings = get_runtime_config()
-    base_name = settings.knowledge.model_name
-    base_model, use_fast_model = resolve_api_use_fast_model(
-        model=model,
-        default_fast_without_model=True,
-    )
-    if not base_model:
-        base_model = base_name
-    if base_model != base_name:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Model not found: {model or base_model}")
-    response_model = (
-        fast_virtual_model_id(base_name) if use_fast_model else base_name
-    )
-    return response_model, use_fast_model
-
-
 openai_router = APIRouter(prefix="/v1", tags=["runtime-openai"], dependencies=[Depends(require_runtime_api_key)])
 
 
 @openai_router.get("/models")
 async def models_response():
     settings = get_runtime_config()
-    models = [{
-        "id": settings.knowledge.model_name,
-        "object": "model",
-        "created": 0,
-        "owned_by": "llm-wiki-runtime",
-    }]
-    if fast_model_available():
-        models.append({
-            "id": fast_virtual_model_id(settings.knowledge.model_name),
+    return {
+        "object": "list",
+        "data": [{
+            "id": settings.knowledge.model_name,
             "object": "model",
             "created": 0,
             "owned_by": "llm-wiki-runtime",
-        })
-    return {"object": "list", "data": models}
+        }],
+    }
 
 
 @openai_router.post("/chat/completions")
@@ -775,7 +742,8 @@ async def openai_chat_response(body: OpenAIChatRequest, request: Request):
         )
 
     settings = get_runtime_config()
-    response_model, use_fast_model = _resolve_runtime_openai_model(body.model)
+    if body.model != settings.knowledge.model_name:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Model not found: {body.model}")
 
     user_message = next((m.content for m in reversed(body.messages) if m.role == "user"), "")
     if not user_message:
@@ -786,19 +754,11 @@ async def openai_chat_response(body: OpenAIChatRequest, request: Request):
         for m in body.messages[:-1]
         if m.role in ("user", "assistant")
     ]
-    runtime_body = RuntimeChatRequest(
-        message=user_message,
-        history=history,
-        stream=body.stream,
-        use_fast_model=use_fast_model,
-    )
+    runtime_body = RuntimeChatRequest(message=user_message, history=history, stream=body.stream)
     should_cancel = _disconnect_checker(request)
 
     if body.stream:
-        return StreamingResponse(
-            _openai_sse(runtime_body, response_model, should_cancel),
-            media_type="text/event-stream",
-        )
+        return StreamingResponse(_openai_sse(runtime_body, body.model, should_cancel), media_type="text/event-stream")
 
     answer_parts: list[str] = []
     async for event in _chat_events(runtime_body, should_cancel):
@@ -810,7 +770,7 @@ async def openai_chat_response(body: OpenAIChatRequest, request: Request):
         "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
         "object": "chat.completion",
         "created": int(time.time()),
-        "model": response_model,
+        "model": body.model,
         "choices": [{
             "index": 0,
             "message": {"role": "assistant", "content": content},

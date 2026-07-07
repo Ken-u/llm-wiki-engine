@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.agents import service
 from app.agents.models import Agent
 from app.agents.skill_refs import sign_source_ref, verify_source_ref
-from app.llm.model_select import fast_model_available
+from app.llm.model_select import fast_virtual_model_id, parse_virtual_model
 from app.database import get_db
 from app.documents.service import read_document_content
 from pathlib import Path
@@ -28,6 +28,8 @@ router = APIRouter(prefix="/api/public/skills", tags=["public-skills"])
 
 class SkillChatRequest(BaseModel):
     message: str = Field(min_length=1)
+    model: str | None = None
+    use_fast_model: bool = False
 
 
 class SkillSource(BaseModel):
@@ -75,13 +77,30 @@ async def require_skill_access(
     return SkillAccess(agent=await _agent_for_skill_token(db, raw_token))
 
 
-def build_skill_markdown(agent: Agent, base_url: str, raw_token: str) -> str:
+def build_skill_markdown(
+    agent: Agent,
+    base_url: str,
+    raw_token: str,
+    *,
+    knowledge_model_name: str = "",
+) -> str:
     skill_name = "".join(
         ch.lower() if ch.isalnum() else "-"
         for ch in agent.name.strip()
     ).strip("-") or "llm-wiki-knowledge"
     chat_url = f"{base_url}/api/public/skills/chat"
     source_url = f"{base_url}/api/public/skills/documents/content?ref=<source_ref>"
+    fast_model_lines = [
+        "",
+        "Fast model (optional, when configured by the knowledge base admin):",
+        '- Default request uses the standard model: `{"message": "..."}`',
+        '- Use fast model: `{"message": "...", "use_fast_model": true}`',
+    ]
+    if knowledge_model_name:
+        fast_model_lines.append(
+            f'- Or set model to `{fast_virtual_model_id(knowledge_model_name)}`'
+        )
+    fast_model_section = "\n".join(fast_model_lines)
     return f"""---
 name: {skill_name}-knowledge
 description: Use when the user asks to query or verify information against the {agent.name} knowledge base.
@@ -99,6 +118,7 @@ Use:
 - GET {source_url}
 
 Authorization: Bearer {raw_token}
+{fast_model_section}
 
 Only read source documents through `source_ref` values returned by chat. Do not guess filenames or paths. Do not list raw documents.
 If the knowledge base does not contain an answer, say so clearly.
@@ -109,6 +129,8 @@ async def collect_skill_answer(
     db: AsyncSession,
     agent: Agent,
     message: str,
+    *,
+    use_fast_model: bool = False,
 ) -> tuple[str, list[SkillSource]]:
     projects = await service.get_agent_projects(db, agent.id)
     chunks: list[str] = []
@@ -140,7 +162,7 @@ async def collect_skill_answer(
         system_prompt_override=agent.system_prompt_override or "",
         max_tool_calls=agent.max_tool_calls,
         debug_result_limit=agent.debug_result_limit,
-        use_fast_model=fast_model_available(),
+        use_fast_model=use_fast_model,
     ):
         try:
             payload = json.loads(event)
@@ -167,7 +189,11 @@ async def skill_chat(
     access: SkillAccess = Depends(require_skill_access),
     db: AsyncSession = Depends(get_db),
 ):
-    answer, sources = await collect_skill_answer(db, access.agent, body.message)
+    _, fast_from_model = parse_virtual_model(body.model or "")
+    use_fast_model = body.use_fast_model or fast_from_model
+    answer, sources = await collect_skill_answer(
+        db, access.agent, body.message, use_fast_model=use_fast_model,
+    )
     return SkillChatResponse(answer=answer, sources=sources)
 
 
@@ -199,5 +225,15 @@ async def download_skill(
     db: AsyncSession = Depends(get_db),
 ):
     agent = await _agent_for_skill_token(db, install_token)
-    markdown = build_skill_markdown(agent, str(request.base_url).rstrip("/"), install_token)
+    projects = await service.get_agent_projects(db, agent.id)
+    knowledge_model_name = next(
+        (p.knowledge_api_model_name for p in projects if p.knowledge_api_model_name),
+        "",
+    )
+    markdown = build_skill_markdown(
+        agent,
+        str(request.base_url).rstrip("/"),
+        install_token,
+        knowledge_model_name=knowledge_model_name,
+    )
     return PlainTextResponse(markdown, media_type="text/markdown")

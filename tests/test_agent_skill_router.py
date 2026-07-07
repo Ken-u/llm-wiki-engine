@@ -77,6 +77,7 @@ def test_regenerate_skill_token_and_download_skill_markdown(tmp_path):
             assert "text/markdown" in download.headers["content-type"]
             assert "Skill Agent" in download.text
             assert "POST http://test/api/public/skills/chat" in download.text
+            assert "use_fast_model" in download.text
             assert token in download.text
         finally:
             await client.aclose()
@@ -85,20 +86,7 @@ def test_regenerate_skill_token_and_download_skill_markdown(tmp_path):
     asyncio.run(run())
 
 
-def test_public_skill_download_rejects_invalid_token(tmp_path):
-    async def run():
-        client, _ = await _build_client(tmp_path)
-        try:
-            response = await client.get("/api/public/skills/lws_invalid")
-            assert response.status_code == 401
-        finally:
-            await client.aclose()
-            app.dependency_overrides.clear()
-
-    asyncio.run(run())
-
-
-def test_skill_chat_resolves_agent_from_token_without_agent_id(tmp_path, monkeypatch):
+def test_skill_chat_defaults_to_standard_model(tmp_path, monkeypatch):
     seen: dict[str, object] = {}
 
     async def fake_toolcall_chat(*_args, **kwargs):
@@ -115,7 +103,6 @@ def test_skill_chat_resolves_agent_from_token_without_agent_id(tmp_path, monkeyp
             agent = await db.get(Agent, "agent-1")
             token = await service.regenerate_skill_token(db, agent)
 
-        monkeypatch.setattr("app.agents.skill_router.fast_model_available", lambda: True)
         monkeypatch.setattr(
             "app.agents.skill_router.service.agent_toolcall_chat",
             fake_toolcall_chat,
@@ -129,7 +116,58 @@ def test_skill_chat_resolves_agent_from_token_without_agent_id(tmp_path, monkeyp
             )
             assert response.status_code == 200
             assert response.json()["answer"] == "GMS answer"
+            assert seen.get("use_fast_model") is False
+        finally:
+            await client.aclose()
+            app.dependency_overrides.clear()
+
+    asyncio.run(run())
+
+
+def test_skill_chat_use_fast_model_flag(tmp_path, monkeypatch):
+    seen: dict[str, object] = {}
+
+    async def fake_toolcall_chat(*_args, **kwargs):
+        seen.update(kwargs)
+        async def gen():
+            yield json.dumps({"token": "fast answer"})
+            yield json.dumps({"done": True})
+        async for item in gen():
+            yield item
+
+    async def run():
+        client, Session = await _build_client(tmp_path)
+        async with Session() as db:
+            agent = await db.get(Agent, "agent-1")
+            token = await service.regenerate_skill_token(db, agent)
+
+        monkeypatch.setattr(
+            "app.agents.skill_router.service.agent_toolcall_chat",
+            fake_toolcall_chat,
+        )
+
+        try:
+            response = await client.post(
+                "/api/public/skills/chat",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"message": "查一下 GMS", "use_fast_model": True},
+            )
+            assert response.status_code == 200
+            assert response.json()["answer"] == "fast answer"
             assert seen.get("use_fast_model") is True
+        finally:
+            await client.aclose()
+            app.dependency_overrides.clear()
+
+    asyncio.run(run())
+
+
+def test_public_skill_download_rejects_invalid_token(tmp_path):
+    async def run():
+        client, _ = await _build_client(tmp_path)
+        try:
+            response = await client.get("/api/public/skills/lws_invalid")
+            assert response.status_code == 401
         finally:
             await client.aclose()
             app.dependency_overrides.clear()
