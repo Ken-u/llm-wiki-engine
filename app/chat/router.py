@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import aiofiles
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import StreamingResponse
@@ -77,6 +77,7 @@ async def _save_messages(project_dir: str, conv_id: str, messages: list[dict]) -
 async def chat(
     project_id: str,
     body: ChatRequest,
+    request: Request,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -92,6 +93,9 @@ async def chat(
         for m in history
         if m["role"] in ("user", "assistant")
     ]
+
+    async def should_cancel() -> bool:
+        return await request.is_disconnected()
 
     async def sse_stream():
         collected_tokens: list[str] = []
@@ -150,6 +154,7 @@ async def chat(
             body.message,
             llm_history,
             "",
+            should_cancel=should_cancel,
         ):
             payload = json.loads(event)
             if "token" in payload:
@@ -161,6 +166,9 @@ async def chat(
                 )
                 payload["conversation_id"] = conv_id
             yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+        if await should_cancel():
+            return
 
         await persist_messages()
         if collected_traces:

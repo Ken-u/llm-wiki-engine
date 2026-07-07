@@ -11,9 +11,11 @@ import asyncio
 import json
 import logging
 import uuid
+from collections.abc import Awaitable, Callable
 from typing import AsyncGenerator
 
 logger = logging.getLogger(__name__)
+ShouldCancel = Callable[[], Awaitable[bool]] | None
 
 
 async def wrap_agent_sse(
@@ -23,6 +25,7 @@ async def wrap_agent_sse(
     agent_id: str | None = None,
     conversation_id: str | None = None,
     user_message: str = "",
+    should_cancel: ShouldCancel = None,
 ) -> AsyncGenerator[str, None]:
     """Transparently pass-through all SSE events while collecting data for feedback.
 
@@ -47,6 +50,9 @@ async def wrap_agent_sse(
                 collected_traces = payload.get("tool_traces", [])
         except (json.JSONDecodeError, KeyError, TypeError):
             pass
+
+    if should_cancel is not None and await should_cancel():
+        return
 
     if not collected_traces:
         return

@@ -15,7 +15,7 @@ from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.models import Agent, AgentProject
-from app.agents.orchestrator import run_agent_turn
+from app.agents.orchestrator import ShouldCancel, run_agent_turn
 from app.agents.tools import ToolContext
 from app.chat.context import compute_context_budget, truncate_to_budget
 from app.config import get_config
@@ -328,6 +328,7 @@ async def agent_toolcall_chat(
     max_tool_calls: int = 20,
     debug_result_limit: int = 2000,
     include_ticket_project: bool = True,
+    should_cancel: ShouldCancel = None,
 ):
     """Agent chat via tool-calling orchestrator. Returns an async generator of SSE events.
 
@@ -348,5 +349,6 @@ async def agent_toolcall_chat(
         system_prompt_override=system_prompt_override,
         max_tool_calls=max_tool_calls,
         debug_result_limit=debug_result_limit,
+        should_cancel=should_cancel,
     ):
         yield event

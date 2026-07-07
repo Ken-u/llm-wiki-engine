@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -299,6 +299,7 @@ async def regenerate_skill_token(
 async def agent_chat(
     agent_id: str,
     body: ChatRequest,
+    request: Request,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -323,6 +324,9 @@ async def agent_chat(
                 if m.get("role") in ("user", "assistant")
             ]
 
+    async def should_cancel() -> bool:
+        return await request.is_disconnected()
+
     async def sse_stream():
         collected_tokens: list[str] = []
         persisted_id: str | None = conv_id
@@ -331,6 +335,7 @@ async def agent_chat(
             system_prompt_override=agent.system_prompt_override or "",
             max_tool_calls=agent.max_tool_calls,
             debug_result_limit=agent.debug_result_limit,
+            should_cancel=should_cancel,
         ):
             payload = json.loads(event)
             if "token" in payload:
@@ -356,5 +361,6 @@ async def agent_chat(
         agent_id=agent.id,
         conversation_id=body.conversation_id,
         user_message=body.message,
+        should_cancel=should_cancel,
     )
     return StreamingResponse(wrapped, media_type="text/event-stream")
