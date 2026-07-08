@@ -36,6 +36,7 @@ class PublicAgentInfo(BaseModel):
     description: str
     require_api_key: bool
     tool_labels: dict[str, str] = {}
+    fast_model_enabled: bool = False
 
 
 class PublicAuthRequest(BaseModel):
@@ -72,6 +73,7 @@ async def get_public_agent_info(
         description=agent.description,
         require_api_key=agent.require_api_key,
         tool_labels=labels,
+        fast_model_enabled=bool(get_config().llm.fast_model),
     )
 
 
