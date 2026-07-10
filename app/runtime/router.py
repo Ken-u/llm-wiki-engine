@@ -34,6 +34,7 @@ from app.knowledge.fast_lookup import (
 )
 from app.knowledge.lookup import _format_fast_result
 from app.agents.skill_refs import sign_source_ref, verify_source_ref
+from app.http.external_url import external_base_url
 from app.runtime.config import get_runtime_config, get_runtime_config_path, load_runtime_config
 from app.runtime.hooks import run_startup_hooks
 from app.runtime.projects import (
@@ -272,7 +273,7 @@ async def get_system_prompt_config_response():
 @router.get("/skill")
 async def runtime_skill_download(request: Request):
     return PlainTextResponse(
-        _build_runtime_skill_markdown(str(request.base_url).rstrip("/")),
+        _build_runtime_skill_markdown(external_base_url(request)),
         media_type="text/markdown",
     )
 

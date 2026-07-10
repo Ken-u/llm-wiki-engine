@@ -86,6 +86,29 @@ def test_regenerate_skill_token_and_download_skill_markdown(tmp_path):
     asyncio.run(run())
 
 
+def test_skill_download_preserves_forwarded_host_port(tmp_path):
+    async def run():
+        client, _ = await _build_client(tmp_path)
+        try:
+            regen = await client.post("/api/agents/agent-1/regenerate-skill-token")
+            token = regen.json()["skill_token"]
+
+            download = await client.get(
+                f"/api/public/skills/{token}",
+                headers={
+                    "x-forwarded-host": "wiki.example.com:8443",
+                    "x-forwarded-proto": "https",
+                },
+            )
+            assert download.status_code == 200
+            assert "POST https://wiki.example.com:8443/api/public/skills/chat" in download.text
+        finally:
+            await client.aclose()
+            app.dependency_overrides.clear()
+
+    asyncio.run(run())
+
+
 def test_skill_chat_defaults_to_standard_model(tmp_path, monkeypatch):
     seen: dict[str, object] = {}
 

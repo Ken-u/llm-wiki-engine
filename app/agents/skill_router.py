@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.agents import service
 from app.agents.models import Agent
 from app.agents.skill_refs import sign_source_ref, verify_source_ref
+from app.http.external_url import external_base_url
 from app.llm.model_select import fast_virtual_model_id, parse_virtual_model
 from app.database import get_db
 from app.documents.service import read_document_content
@@ -232,7 +233,7 @@ async def download_skill(
     )
     markdown = build_skill_markdown(
         agent,
-        str(request.base_url).rstrip("/"),
+        external_base_url(request),
         install_token,
         knowledge_model_name=knowledge_model_name,
     )
